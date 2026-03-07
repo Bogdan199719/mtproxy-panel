@@ -33,7 +33,7 @@ echo -e "  • Nginx конфиг mtg-panel (если есть)"
 echo -e "  • Systemd сервис mtg-adminpanel"
 echo ""
 echo -ne "${RED}Ты уверен? Все данные будут удалены! (y/N)${NC}: "
-read -r CONFIRM
+IFS= read -r CONFIRM < /dev/tty
 
 if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
     echo -e "${DIM}Отменено.${NC}"
