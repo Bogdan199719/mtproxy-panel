@@ -136,10 +136,7 @@ if [ -d "$INSTALL_DIR" ]; then
     print_warn "Директория $INSTALL_DIR уже существует — обновляем..."
     cd "$INSTALL_DIR" && git pull -q
 else
-    cd /tmp
-    git clone -q https://github.com/MaksimTMB/mtg-adminpanel.git /tmp/mtg-adminpanel-clone
-    mv /tmp/mtg-adminpanel-clone/mtg-panel "$INSTALL_DIR"
-    rm -rf /tmp/mtg-adminpanel-clone
+    git clone -q https://github.com/MaksimTMB/mtg-adminpanel.git "$INSTALL_DIR"
 fi
 print_ok "Репозиторий загружен"
 
