@@ -42,6 +42,14 @@ bash <(curl -fsSL https://raw.githubusercontent.com/MaksimTMB/mtg-adminpanel/mai
 
 ---
 
+## 🔄 Обновление
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MaksimTMB/mtg-adminpanel/main/update.sh)
+```
+
+---
+
 ## 🗑️ Удаление
 
 ```bash
