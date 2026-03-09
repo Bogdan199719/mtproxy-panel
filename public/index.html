@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MTG AdminPanel</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap');
 
@@ -351,18 +352,30 @@ const getToken = () => localStorage.getItem('mtg_token') || '';
 const setToken = (t) => localStorage.setItem('mtg_token', t);
 
 // ── API ───────────────────────────────────────────────────
+const getTotpCode = () => sessionStorage.getItem('mtg_totp') || '';
+const setTotpCode = (c) => { if (c) sessionStorage.setItem('mtg_totp', c); else sessionStorage.removeItem('mtg_totp'); };
+
 const api = async (method, path, body) => {
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-auth-token': getToken(),
+  };
+  const totp = getTotpCode();
+  if (totp) headers['x-totp-code'] = totp;
+
   const r = await fetch(path, {
     method,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': getToken(),
-    },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (r.status === 401) {
     setToken('');
     throw new Error('Unauthorized');
+  }
+  if (r.status === 403) {
+    const data = await r.json().catch(() => ({}));
+    if (data.totp) throw new Error('TOTP_REQUIRED');
+    throw new Error(data.error || 'Forbidden');
   }
   const data = await r.json();
   if (!r.ok) throw new Error(data.error || 'API error');
@@ -390,38 +403,94 @@ function copyText(text) {
 // ── Login ─────────────────────────────────────────────────
 function Login({ onLogin }) {
   const [token, setToken_] = useState('');
-  const submit = async (e) => {
+  const [step, setStep] = useState('token'); // 'token' | 'totp'
+  const [totpInput, setTotpInput] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submitToken = async (e) => {
     e.preventDefault();
     if (!token.trim()) return;
+    setLoading(true);
     try {
       setToken(token);
-      await api('GET', '/api/nodes', null);
-      toast('Подключено!', 'success');
-      onLogin(token);
+      // Проверяем включена ли 2FA
+      const status = await fetch('/api/totp/status', {
+        headers: { 'x-auth-token': token }
+      }).then(r => r.json());
+      if (status.enabled) {
+        setStep('totp');
+      } else {
+        await api('GET', '/api/nodes', null);
+        toast('Подключено!', 'success');
+        onLogin(token);
+      }
     } catch {
       setToken('');
       toast('Неверный токен', 'error');
-    }
+    } finally { setLoading(false); }
+  };
+
+  const submitTotp = async (e) => {
+    e.preventDefault();
+    if (totpInput.length !== 6) return;
+    setLoading(true);
+    try {
+      setTotpCode(totpInput);
+      await api('GET', '/api/nodes', null);
+      toast('Подключено!', 'success');
+      onLogin(token);
+    } catch(err) {
+      setTotpCode('');
+      setTotpInput('');
+      toast('Неверный код 2FA', 'error');
+    } finally { setLoading(false); }
   };
 
   return (
     <div style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100vh',padding:'16px'}}>
       <div className="modal" style={{maxWidth:360,width:'100%',position:'static',borderRadius:16,maxHeight:'none'}}>
         <div style={{textAlign:'center',marginBottom:24}}>
-          <div style={{fontSize:32,marginBottom:8}}>🔒</div>
+          <div style={{fontSize:32,marginBottom:8}}>{step === 'totp' ? '🔐' : '🔒'}</div>
           <div style={{fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--cyan)'}}>MTG PANEL</div>
-          <div style={{fontSize:12,color:'var(--text3)',marginTop:4}}>MTG Proxy Manager</div>
-        </div>
-        <form onSubmit={submit}>
-          <div className="form-group">
-            <label className="form-label">Auth Token</label>
-            <input className="form-input" type="password" placeholder="Введи токен..." value={token}
-              onChange={e => setToken_(e.target.value)} autoFocus />
+          <div style={{fontSize:12,color:'var(--text3)',marginTop:4}}>
+            {step === 'totp' ? 'Двухфакторная аутентификация' : 'MTG Proxy Manager'}
           </div>
-          <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} type="submit">
-            Войти
-          </button>
-        </form>
+        </div>
+
+        {step === 'token' ? (
+          <form onSubmit={submitToken}>
+            <div className="form-group">
+              <label className="form-label">Auth Token</label>
+              <input className="form-input" type="password" placeholder="Введи токен..." value={token}
+                onChange={e => setToken_(e.target.value)} autoFocus />
+            </div>
+            <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} type="submit" disabled={loading}>
+              {loading ? <span className="spinner" style={{width:14,height:14}}/> : 'Войти'}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={submitTotp}>
+            <div style={{fontSize:12,color:'var(--text2)',marginBottom:16,textAlign:'center'}}>
+              Введи код из приложения Google Authenticator
+            </div>
+            <div className="form-group">
+              <label className="form-label">6-значный код</label>
+              <input className="form-input" type="text" inputMode="numeric" pattern="[0-9]*"
+                placeholder="000000" value={totpInput} maxLength={6}
+                onChange={e => setTotpInput(e.target.value.replace(/\D/g,''))}
+                autoFocus style={{textAlign:'center',fontSize:24,letterSpacing:8}} />
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button className="btn btn-ghost" style={{flex:1,justifyContent:'center'}} type="button"
+                onClick={() => { setStep('token'); setToken(''); setTotpInput(''); }}>
+                ← Назад
+              </button>
+              <button className="btn btn-primary" style={{flex:1,justifyContent:'center'}} type="submit" disabled={loading || totpInput.length !== 6}>
+                {loading ? <span className="spinner" style={{width:14,height:14}}/> : 'Подтвердить'}
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );
@@ -629,7 +698,11 @@ function NodesPage({ nodes, onReload, onManage }) {
     setVersions(v => ({...v, [node.id]: 'checking...'}));
     try {
       const r = await api('GET', `/api/nodes/${node.id}/mtg-version`);
-      setVersions(v => ({...v, [node.id]: r.version || 'unknown'}));
+      // Форматируем дату из "mtg:2 | built 2026-02-28T..."
+      let version = r.version || 'unknown';
+      const dateMatch = version.match(/(\d{4}-\d{2}-\d{2})/);
+      if (dateMatch) version = 'обновлён ' + dateMatch[1];
+      setVersions(v => ({...v, [node.id]: version}));
     } catch {
       setVersions(v => ({...v, [node.id]: 'error'}));
     }
@@ -661,7 +734,7 @@ function NodesPage({ nodes, onReload, onManage }) {
           <table>
             <thead>
               <tr>
-                <th>Название</th><th>Host / IP</th><th>SSH</th><th>Порты</th><th>MTG версия</th><th>Действия</th>
+                <th>Название</th><th>Host / IP</th><th>SSH</th><th>Порты</th><th>Действия</th>
               </tr>
             </thead>
             <tbody>
@@ -671,21 +744,6 @@ function NodesPage({ nodes, onReload, onManage }) {
                   <td style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--cyan)'}}>{node.host}</td>
                   <td style={{fontSize:12}}>{node.ssh_user}:{node.ssh_port}</td>
                   <td style={{fontSize:12}}>{node.start_port}+</td>
-                  <td onClick={e => e.stopPropagation()}>
-                    {versions[node.id] ? (
-                      <div style={{display:'flex',alignItems:'center',gap:6}}>
-                        <span className="badge badge-cyan" style={{fontSize:11}}>{versions[node.id]}</span>
-                        <button className="btn btn-ghost btn-sm" style={{padding:'2px 6px',fontSize:11}}
-                          onClick={() => updateMtg(node)} disabled={updating[node.id]}>
-                          {updating[node.id] ? '...' : '↑ Update'}
-                        </button>
-                      </div>
-                    ) : (
-                      <button className="btn btn-ghost btn-sm" style={{fontSize:11}} onClick={() => checkVersion(node)}>
-                        Проверить
-                      </button>
-                    )}
-                  </td>
                   <td>
                     <div className="actions-row" onClick={e => e.stopPropagation()}>
                       <button className="btn btn-ghost btn-sm" onClick={() => checkNode(node)}>Ping</button>
@@ -710,6 +768,63 @@ function NodesPage({ nodes, onReload, onManage }) {
           onSave={() => { setModal(null); onReload(); }}
         />
       )}
+    </div>
+  );
+}
+
+// ── QR Code Modal ─────────────────────────────────────────
+function QRModal({ user, node, onClose }) {
+  const qrRef = React.useRef(null);
+  const [copied, setCopied] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!qrRef.current) return;
+    qrRef.current.innerHTML = '';
+    new QRCode(qrRef.current, {
+      text: user.link,
+      width: 220,
+      height: 220,
+      colorDark: '#000000',
+      colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+  }, [user.link]);
+
+  const copyLink = () => {
+    navigator.clipboard.writeText(user.link).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const downloadQR = () => {
+    const canvas = qrRef.current?.querySelector('canvas');
+    if (!canvas) return;
+    const link = document.createElement('a');
+    link.download = `mtg-${user.name}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+    toast('QR сохранён!', 'success');
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{maxWidth:320,textAlign:'center'}}>
+        <div className="modal-title" style={{textAlign:'center'}}>📱 QR-код — {user.name}</div>
+        <div style={{fontSize:11,color:'var(--text3)',marginBottom:16,fontFamily:'var(--mono)'}}>{node.name} · порт {user.port}</div>
+        <div style={{display:'inline-block',padding:16,background:'#fff',borderRadius:12,marginBottom:16}}>
+          <div ref={qrRef}/>
+        </div>
+        <div onClick={() => { navigator.clipboard.writeText(user.link); toast('Ссылка скопирована!', 'success'); }}
+          style={{
+            background:'var(--bg3)',border:'1px solid var(--border)',
+            borderRadius:8,padding:'8px 12px',marginBottom:16,
+            fontFamily:'var(--mono)',fontSize:10,color:'var(--cyan)',
+            wordBreak:'break-all',textAlign:'left',cursor:'pointer'
+          }} title="Нажми чтобы скопировать">{user.link}</div>
+        <div style={{fontSize:11,color:'var(--text3)',marginBottom:12}}>👆 нажми на ссылку чтобы скопировать</div>
+        <button className="btn btn-ghost btn-sm" onClick={onClose}>Закрыть</button>
+      </div>
     </div>
   );
 }
@@ -904,6 +1019,7 @@ function UsersPage({ node, onBack }) {
   const setBusyFor = (name, val) => setBusy(b => ({...b, [name]: val}));
   const [editUser, setEditUser] = useState(null);
   const [chartUser, setChartUser] = useState(null);
+  const [qrUser, setQrUser] = useState(null);
   const [traffic, setTraffic] = useState({});
 
   const loadTraffic = useCallback(async () => {
@@ -1037,6 +1153,7 @@ function UsersPage({ node, onBack }) {
                           {busy[user.name] ? <span className="spinner" style={{width:12,height:12}}/> : (user.running ? '⏸' : '▶')}
                         </button>
                         <button className="btn btn-ghost btn-sm" onClick={() => setEditUser(user)}>✏️</button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setQrUser(user)} title="QR-код">📱</button>
                         <button
                           className="btn btn-danger btn-sm"
                           onClick={() => removeUser(user)}
@@ -1066,6 +1183,9 @@ function UsersPage({ node, onBack }) {
           onClose={() => setModal(false)}
           onSave={() => { setModal(false); loadUsers(); }}
         />
+      )}
+      {qrUser && (
+        <QRModal user={qrUser} node={node} onClose={() => setQrUser(null)} />
       )}
       {editUser && (
         <EditUserModal
@@ -1223,6 +1343,9 @@ function App() {
           <div className={`nav-item ${page==='users'?'active':''}`} onClick={() => setPage('users')}>
             <span className="icon">👥</span> Юзеры
           </div>
+          <div className={`nav-item ${page==='settings'?'active':''}`} onClick={() => setPage('settings')}>
+            <span className="icon">⚙️</span> Настройки
+          </div>
         </nav>
         <div style={{padding:'12px 16px',borderTop:'1px solid var(--border)'}}>
           <div style={{fontSize:11,color:'var(--text3)'}}>
@@ -1240,6 +1363,7 @@ function App() {
         {page === 'nodes' && <NodesPage nodes={nodes} onReload={loadNodes} onManage={selectNode} />}
         {page === 'users' && !selectedNode && <AllUsersPage nodes={nodes} onSelectNode={selectNode} />}
         {page === 'users' && selectedNode && <UsersPage node={selectedNode} onBack={() => { setSelectedNode(null); setPage('users'); }} />}
+        {page === 'settings' && <SettingsPage />}
       </main>
 
       {/* ── Mobile bottom navigation ── */}
@@ -1256,13 +1380,159 @@ function App() {
           <span className="mnav-icon">👥</span>
           <span className="mnav-label">Юзеры</span>
         </div>
-        <div className="mobile-nav-item" onClick={() => { setToken(''); setAuthed(false); }}>
-          <span className="mnav-icon">🚪</span>
-          <span className="mnav-label">Выход</span>
+        <div className={`mobile-nav-item ${page==='settings'?'active':''}`} onClick={() => setPage('settings')}>
+          <span className="mnav-icon">⚙️</span>
+          <span className="mnav-label">Настройки</span>
         </div>
       </nav>
 
       <Toasts toasts={toasts} />
+    </div>
+  );
+}
+
+// ── Settings Page ─────────────────────────────────────────
+function SettingsPage() {
+  const [totpEnabled, setTotpEnabled] = useState(false);
+  const [setupData, setSetupData] = useState(null); // { secret, qr }
+  const [verifyCode, setVerifyCode] = useState('');
+  const [disableCode, setDisableCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState('idle'); // 'idle' | 'setup' | 'disable'
+
+  useEffect(() => {
+    api('GET', '/api/totp/status').then(r => setTotpEnabled(r.enabled)).catch(() => {});
+  }, []);
+
+  const startSetup = async () => {
+    setLoading(true);
+    try {
+      const data = await api('POST', '/api/totp/setup');
+      setSetupData(data);
+      setStep('setup');
+    } catch(e) { toast(e.message, 'error'); }
+    finally { setLoading(false); }
+  };
+
+  const confirmEnable = async () => {
+    if (verifyCode.length !== 6) return;
+    setLoading(true);
+    try {
+      await api('POST', '/api/totp/verify', { code: verifyCode });
+      toast('2FA включена! ✅', 'success');
+      setTotpEnabled(true);
+      setStep('idle');
+      setSetupData(null);
+      setVerifyCode('');
+    } catch(e) { toast('Неверный код', 'error'); }
+    finally { setLoading(false); }
+  };
+
+  const confirmDisable = async () => {
+    if (disableCode.length !== 6) return;
+    setLoading(true);
+    try {
+      await api('POST', '/api/totp/disable', { code: disableCode });
+      toast('2FA отключена', 'success');
+      setTotpEnabled(false);
+      setStep('idle');
+      setDisableCode('');
+      setTotpCode('');
+    } catch(e) { toast('Неверный код', 'error'); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">⚙️ <span>Настройки</span></div>
+      </div>
+
+      {/* 2FA Card */}
+      <div className="card" style={{maxWidth:500}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+          <div>
+            <div style={{fontWeight:600,fontSize:15}}>🔐 Двухфакторная аутентификация</div>
+            <div style={{fontSize:12,color:'var(--text3)',marginTop:4}}>Google Authenticator / любое TOTP приложение</div>
+          </div>
+          <span className={`badge ${totpEnabled ? 'badge-green' : 'badge-red'}`}>
+            <span className="dot"/>
+            {totpEnabled ? 'включена' : 'выключена'}
+          </span>
+        </div>
+
+        {step === 'idle' && (
+          !totpEnabled ? (
+            <button className="btn btn-primary" onClick={startSetup} disabled={loading}>
+              {loading ? <span className="spinner" style={{width:14,height:14}}/> : '+ Включить 2FA'}
+            </button>
+          ) : (
+            <button className="btn btn-danger" onClick={() => setStep('disable')}>
+              Отключить 2FA
+            </button>
+          )
+        )}
+
+        {step === 'setup' && setupData && (
+          <div>
+            <div style={{fontSize:12,color:'var(--text2)',marginBottom:16}}>
+              1. Открой Google Authenticator<br/>
+              2. Нажми "+" → "Сканировать QR-код"<br/>
+              3. Введи 6-значный код для подтверждения
+            </div>
+            <div style={{textAlign:'center',marginBottom:16}}>
+              <div style={{display:'inline-block',padding:12,background:'#fff',borderRadius:12}}>
+                <img src={setupData.qr} alt="QR" style={{width:200,height:200,display:'block'}}/>
+              </div>
+            </div>
+            <div style={{
+              background:'var(--bg3)',border:'1px solid var(--border)',
+              borderRadius:8,padding:'8px 12px',marginBottom:16,
+              fontFamily:'var(--mono)',fontSize:12,color:'var(--cyan)',
+              wordBreak:'break-all',textAlign:'center'
+            }}>
+              <div style={{fontSize:10,color:'var(--text3)',marginBottom:4}}>Секрет (если QR не работает):</div>
+              {setupData.secret}
+            </div>
+            <div className="form-group">
+              <label className="form-label">Код подтверждения</label>
+              <input className="form-input" type="text" inputMode="numeric" pattern="[0-9]*"
+                placeholder="000000" value={verifyCode} maxLength={6}
+                onChange={e => setVerifyCode(e.target.value.replace(/\D/g,''))}
+                style={{textAlign:'center',fontSize:20,letterSpacing:6}} autoFocus />
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button className="btn btn-ghost" onClick={() => { setStep('idle'); setSetupData(null); }}>Отмена</button>
+              <button className="btn btn-primary" onClick={confirmEnable}
+                disabled={loading || verifyCode.length !== 6} style={{flex:1,justifyContent:'center'}}>
+                {loading ? <span className="spinner" style={{width:14,height:14}}/> : '✅ Подтвердить и включить'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 'disable' && (
+          <div>
+            <div style={{fontSize:12,color:'var(--text2)',marginBottom:16}}>
+              Введи текущий код из приложения для отключения 2FA
+            </div>
+            <div className="form-group">
+              <label className="form-label">Код из приложения</label>
+              <input className="form-input" type="text" inputMode="numeric" pattern="[0-9]*"
+                placeholder="000000" value={disableCode} maxLength={6}
+                onChange={e => setDisableCode(e.target.value.replace(/\D/g,''))}
+                style={{textAlign:'center',fontSize:20,letterSpacing:6}} autoFocus />
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button className="btn btn-ghost" onClick={() => setStep('idle')}>Отмена</button>
+              <button className="btn btn-danger" onClick={confirmDisable}
+                disabled={loading || disableCode.length !== 6} style={{flex:1,justifyContent:'center'}}>
+                {loading ? <span className="spinner" style={{width:14,height:14}}/> : 'Отключить 2FA'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

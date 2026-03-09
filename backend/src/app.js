@@ -4,6 +4,8 @@ const cors = require('cors');
 const path = require('path');
 const db = require('./db');
 const ssh = require('./ssh');
+const authenticator = require('./totp');
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,13 +14,74 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
-// ─── Auth ─────────────────────────────────────────────────
-const AUTH_TOKEN = process.env.AUTH_TOKEN || 'changeme';
+// ─── TOTP 2FA ──────────────────────────────────────────────
+const TOTP_ISSUER = 'MTG Panel';
+
+function getTotpSecret() {
+  const row = db.prepare("SELECT value FROM settings WHERE key='totp_secret'").get();
+  return row ? row.value : null;
+}
+
+function isTotpEnabled() {
+  const row = db.prepare("SELECT value FROM settings WHERE key='totp_enabled'").get();
+  return row && row.value === '1';
+}
+
 app.use('/api', (req, res, next) => {
   const token = req.headers['x-auth-token'] || req.query.token;
   if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
   next();
 });
+
+// Получить статус 2FA
+app.get('/api/totp/status', (req, res) => {
+  const token = req.headers['x-auth-token'];
+  if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
+  res.json({ enabled: isTotpEnabled() });
+});
+
+// Сгенерировать новый TOTP секрет и QR
+app.post('/api/totp/setup', async (req, res) => {
+  const token = req.headers['x-auth-token'];
+  if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
+  const secret = authenticator.generateSecret();
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('totp_secret', ?)").run(secret);
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('totp_enabled', '0')").run();
+  const otpauth = authenticator.keyuri('admin', TOTP_ISSUER, secret);
+  const qrDataUrl = otpauth;
+  res.json({ secret, qr: qrDataUrl });
+});
+
+// Подтвердить и включить 2FA
+app.post('/api/totp/verify', (req, res) => {
+  const token = req.headers['x-auth-token'];
+  if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
+  const { code } = req.body;
+  const secret = getTotpSecret();
+  if (!secret) return res.status(400).json({ error: 'Setup first' });
+  if (authenticator.verify(code, secret)) {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('totp_enabled', '1')").run();
+    res.json({ ok: true });
+  } else {
+    res.status(400).json({ error: 'Invalid code' });
+  }
+});
+
+// Отключить 2FA
+app.post('/api/totp/disable', (req, res) => {
+  const token = req.headers['x-auth-token'];
+  if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
+  const { code } = req.body;
+  const secret = getTotpSecret();
+  if (secret && !authenticator.verify(code, secret)) {
+    return res.status(400).json({ error: 'Invalid code' });
+  }
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('totp_enabled', '0')").run();
+  res.json({ ok: true });
+});
+
+// ── Auth middleware ───────────────────────────────────────
+const AUTH_TOKEN = process.env.AUTH_TOKEN || 'changeme';
 
 // ══════════════════════════════════════════════════════════
 // NODES
@@ -89,9 +152,9 @@ app.get('/api/nodes/:id/mtg-version', async (req, res) => {
   const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(req.params.id);
   if (!node) return res.status(404).json({ error: 'Not found' });
   try {
-    const r = await ssh.sshExec(node, "docker images nineseconds/mtg --format '{{.Tag}}|{{.CreatedSince}}' | head -1");
-    const [tag, created] = (r.output || '').split('|');
-    res.json({ version: tag || 'unknown', created: created || '', raw: r.output });
+    const r = await ssh.sshExec(node, "docker inspect nineseconds/mtg:2 --format 'mtg:2 | built {{.Created}}' 2>/dev/null | head -1");
+    const version = (r.output || '').trim().split('\n')[0] || 'unknown';
+    res.json({ version, raw: r.output });
   } catch (e) {
     res.json({ version: 'error', error: e.message });
   }
@@ -135,7 +198,7 @@ app.get('/api/nodes/:id/users', async (req, res) => {
         ...u,
         connections: remote ? remote.connections : 0,
         running: remote ? !remote.status.includes('stopped') : false,
-        link: `https://t.me/proxy?server=${node.host}&port=${u.port}&secret=${u.secret}`,
+        link: `tg://proxy?server=${node.host}&port=${u.port}&secret=${u.secret}`,
         expired: u.expires_at ? new Date(u.expires_at) < new Date() : false
       };
     });
@@ -145,7 +208,7 @@ app.get('/api/nodes/:id/users', async (req, res) => {
       ...u,
       connections: 0,
       running: false,
-      link: `https://t.me/proxy?server=${node.host}&port=${u.port}&secret=${u.secret}`,
+      link: `tg://proxy?server=${node.host}&port=${u.port}&secret=${u.secret}`,
       expired: u.expires_at ? new Date(u.expires_at) < new Date() : false
     })));
   }
@@ -166,7 +229,7 @@ app.post('/api/nodes/:id/users', async (req, res) => {
     res.json({
       id: result.lastInsertRowid, name, port, secret,
       note: note || '', expires_at: expires_at || null, traffic_limit_gb: traffic_limit_gb || null,
-      link: `https://t.me/proxy?server=${node.host}&port=${port}&secret=${secret}`
+      link: `tg://proxy?server=${node.host}&port=${port}&secret=${secret}`
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -270,7 +333,7 @@ setInterval(cleanExpiredUsers, 60 * 60 * 1000);
 app.listen(PORT, () => {
   console.log(`🔒 MTG Panel running on http://0.0.0.0:${PORT}`);
   console.log(`🔑 Auth token: ${AUTH_TOKEN}`);
-  // Запускаем сразу при старте
+  // ткай запускаем сразу при старте
   setTimeout(recordHistory, 10000);
   setTimeout(cleanExpiredUsers, 5000);
 });

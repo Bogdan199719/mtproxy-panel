@@ -43,6 +43,10 @@ db.exec(`
     connections INTEGER DEFAULT 0,
     recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
 `);
 
 // Migrate existing tables if needed
