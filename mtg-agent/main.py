@@ -27,10 +27,9 @@ def get_mtg_containers():
 
 def get_connections(container) -> int:
     """
-    Считать входящие ESTABLISHED соединения клиентов к прокси.
-    Читаем /proc/{pid}/net/tcp6 из namespace контейнера.
-    Фильтруем: только где local_port == 3128 (0C38) и state == ESTABLISHED (01).
-    Исходящие к Telegram (149.154.x, 91.108.x) не считаем.
+    Считать уникальные remote IP адреса подключённых к прокси.
+    Уникальный IP ≈ уникальное устройство (лучшее приближение без HWID).
+    Читаем /proc/{pid}/net/tcp6, фильтруем по local_port=3128 (0C38), state=ESTABLISHED (01).
     """
     try:
         container.reload()
@@ -49,18 +48,21 @@ def get_connections(container) -> int:
             with open(tcp_path) as f:
                 lines = f.readlines()[1:]
 
-        count = 0
+        remote_ips = set()
         for line in lines:
             parts = line.split()
             if len(parts) < 4:
                 continue
             state = parts[3]
-            local_addr = parts[1]  # format: XXXXXXXX:PORT
+            local_addr = parts[1]
+            remote_addr = parts[2]
             local_port = local_addr.split(":")[1] if ":" in local_addr else ""
-            # Only count ESTABLISHED incoming connections to MTG port 3128
             if state == "01" and local_port == MTG_PORT_HEX:
-                count += 1
-        return count
+                # Extract remote IP (strip port)
+                remote_ip = remote_addr.rsplit(":", 1)[0] if ":" in remote_addr else remote_addr
+                remote_ips.add(remote_ip)
+
+        return len(remote_ips)
     except Exception:
         return 0
 
@@ -104,15 +106,16 @@ def metrics(x_agent_token: str = Header(default="")):
         name = c.name  # mtg-admin, mtg-liza, etc.
         running = c.status == "running"
 
-        connections = get_connections(c) if running else 0
+        devices = get_connections(c) if running else 0
         traffic = get_traffic(c) if running else {"rx": "—", "tx": "—", "rx_bytes": 0, "tx_bytes": 0}
 
         result.append({
             "name": name,
             "running": running,
             "status": c.status,
-            "connections": connections,
-            "is_online": connections > 0,
+            "connections": devices,   # unique IPs = approximate device count
+            "devices": devices,
+            "is_online": devices > 0,
             "traffic": traffic,
         })
 

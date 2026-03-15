@@ -1484,33 +1484,90 @@ function Chart({ nodeId, userName }) {
   const ref = useRef(null);
   const inst = useRef(null);
   const [loading, setLoading] = useState(true);
+  const [empty, setEmpty] = useState(false);
 
   useEffect(() => {
-    api('GET',`/api/nodes/${nodeId}/users/${userName}/history`).then(data => {
+    let cancelled = false;
+    const build = (data) => {
+      if(cancelled || !ref.current) return;
+      if(inst.current) { inst.current.destroy(); inst.current = null; }
+      if(!data.length) { setEmpty(true); setLoading(false); return; }
+      setEmpty(false);
       setLoading(false);
-      if(!ref.current) return;
-      if(inst.current) inst.current.destroy();
-      const labels = data.map(d => { const t=new Date(d.recorded_at); return `${t.getHours().toString().padStart(2,'0')}:${t.getMinutes().toString().padStart(2,'0')}`; });
+      const labels = data.map(d => {
+        const t = new Date(d.recorded_at.replace(' ','T'));
+        return `${t.getHours().toString().padStart(2,'0')}:${t.getMinutes().toString().padStart(2,'0')}`;
+      });
       inst.current = new window.Chart(ref.current, {
-        type:'line',
-        data:{ labels, datasets:[{ label:'Подключений', data:data.map(d=>d.connections),
-          borderColor:'#7c6ff7', backgroundColor:'rgba(124,111,247,0.08)',
-          tension:0.45, fill:true, pointRadius:3, pointBackgroundColor:'#38bdf8', borderWidth:2 }] },
-        options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
-          scales:{
-            x:{ticks:{color:'#373d5a',maxTicksLimit:8,font:{size:10,family:'Geist Mono,monospace'}},grid:{color:'rgba(255,255,255,0.03)'}},
-            y:{ticks:{color:'#373d5a',font:{size:10,family:'Geist Mono,monospace'}},grid:{color:'rgba(255,255,255,0.03)'},beginAtZero:true,precision:0}
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Подключений',
+            data: data.map(d => d.connections),
+            borderColor: '#7c6ff7',
+            backgroundColor: 'rgba(124,111,247,0.12)',
+            tension: 0.4,
+            fill: true,
+            pointRadius: 2,
+            pointBackgroundColor: '#38bdf8',
+            borderWidth: 2,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+          scales: {
+            x: {
+              ticks: { color: '#6b7280', maxTicksLimit: 8, font: { size: 10, family: 'Geist Mono,monospace' } },
+              grid: { color: 'rgba(255,255,255,0.04)' }
+            },
+            y: {
+              ticks: { color: '#6b7280', font: { size: 10, family: 'Geist Mono,monospace' } },
+              grid: { color: 'rgba(255,255,255,0.04)' },
+              beginAtZero: true,
+              precision: 0,
+              min: 0
+            }
           }
         }
       });
-    }).catch(()=>setLoading(false));
-    return () => { if(inst.current) inst.current.destroy(); };
+    };
+
+    api('GET', `/api/nodes/${nodeId}/users/${userName}/history`)
+      .then(data => {
+        if(cancelled) return;
+        // Wait for Chart.js to load (loaded with defer)
+        const waitForChart = (retries=20) => {
+          if(window.Chart) { build(data); return; }
+          if(retries <= 0) { setLoading(false); setEmpty(true); return; }
+          setTimeout(() => waitForChart(retries-1), 100);
+        };
+        waitForChart();
+      })
+      .catch(() => { if(!cancelled) { setLoading(false); setEmpty(true); } });
+
+    return () => {
+      cancelled = true;
+      if(inst.current) { inst.current.destroy(); inst.current = null; }
+    };
   }, [nodeId, userName]);
 
   return (
-    <div style={{height:160,position:'relative'}}>
-      {loading && <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--t3)',gap:8,fontSize:12}}><span className="spin"/>Загружаю график...</div>}
-      <canvas ref={ref} style={{display:loading?'none':'block'}}/>
+    <div style={{height:180,position:'relative',padding:'4px 0'}}>
+      {loading && (
+        <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--t3)',gap:8,fontSize:12}}>
+          <span className="spin"/>Загружаю...
+        </div>
+      )}
+      {empty && !loading && (
+        <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--t3)',fontSize:12}}>
+          Нет данных (история собирается каждые 5 минут)
+        </div>
+      )}
+      <canvas ref={ref} style={{display:(loading||empty)?'none':'block'}}/>
     </div>
   );
 }
