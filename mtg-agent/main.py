@@ -27,19 +27,22 @@ def get_mtg_containers():
 
 def get_connections(container) -> int:
     """
-    Считать ESTABLISHED соединения через /proc/net/tcp внутри контейнера.
-    Статус 01 = ESTABLISHED в hex.
+    Считать активные соединения через /proc/net/tcp внутри контейнера.
+    01 = ESTABLISHED, 02 = SYN_SENT, 08 = CLOSE_WAIT
     """
     try:
-        # Читаем /proc/net/tcp через docker exec
         result = container.exec_run("cat /proc/net/tcp", demux=False)
         if result.exit_code != 0:
-            return 0
+            # Fallback: /proc/net/tcp6
+            result = container.exec_run("cat /proc/net/tcp6", demux=False)
+            if result.exit_code != 0:
+                return 0
         output = result.output.decode("utf-8", errors="ignore")
+        active_states = {"01", "02", "08"}
         count = 0
         for line in output.strip().split("\n")[1:]:  # пропускаем заголовок
             parts = line.split()
-            if len(parts) >= 4 and parts[3] == "01":  # 01 = ESTABLISHED
+            if len(parts) >= 4 and parts[3] in active_states:
                 count += 1
         return count
     except Exception:
