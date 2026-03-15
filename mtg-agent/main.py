@@ -4,21 +4,18 @@ MTG Agent — лёгкий HTTP агент для каждой ноды.
 Порт: 8081 (внутри docker сети)
 """
 import os
-import re
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import JSONResponse
 import docker
 
 app = FastAPI(title="MTG Agent", version="1.0.0")
 
-# Простой токен для защиты от случайного доступа
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "mtg-agent-secret")
 
 client = docker.from_env()
 
 
 def get_mtg_containers():
-    """Получить все MTG контейнеры (имя начинается с mtg-)"""
     try:
         return [c for c in client.containers.list(all=True) if c.name.startswith("mtg-") and c.name != "mtg-agent"]
     except Exception:
@@ -26,11 +23,6 @@ def get_mtg_containers():
 
 
 def get_connections(container) -> int:
-    """
-    Считать уникальные remote IP адреса подключённых к прокси.
-    Уникальный IP ≈ уникальное устройство (лучшее приближение без HWID).
-    Читаем /proc/{pid}/net/tcp6, фильтруем по local_port=3128 (0C38), state=ESTABLISHED (01).
-    """
     try:
         container.reload()
         pid = container.attrs.get("State", {}).get("Pid", 0)
@@ -42,7 +34,7 @@ def get_connections(container) -> int:
         tcp6_path = f"/proc/{pid}/net/tcp6"
         try:
             with open(tcp6_path) as f:
-                lines = f.readlines()[1:]  # skip header
+                lines = f.readlines()[1:]
         except Exception:
             tcp_path = f"/proc/{pid}/net/tcp"
             with open(tcp_path) as f:
@@ -58,7 +50,6 @@ def get_connections(container) -> int:
             remote_addr = parts[2]
             local_port = local_addr.split(":")[1] if ":" in local_addr else ""
             if state == "01" and local_port == MTG_PORT_HEX:
-                # Extract remote IP (strip port)
                 remote_ip = remote_addr.rsplit(":", 1)[0] if ":" in remote_addr else remote_addr
                 remote_ips.add(remote_ip)
 
@@ -68,12 +59,11 @@ def get_connections(container) -> int:
 
 
 def get_traffic(container) -> dict:
-    """Получить трафик rx/tx через docker stats (один снапшот)"""
     try:
         stats = container.stats(stream=False)
-        rx = stats.get("networks", {})
-        total_rx = sum(v.get("rx_bytes", 0) for v in rx.values())
-        total_tx = sum(v.get("tx_bytes", 0) for v in rx.values())
+        nets = stats.get("networks", {})
+        total_rx = sum(v.get("rx_bytes", 0) for v in nets.values())
+        total_tx = sum(v.get("tx_bytes", 0) for v in nets.values())
 
         def fmt(b: int) -> str:
             if b >= 1_073_741_824:
@@ -103,9 +93,8 @@ def metrics(x_agent_token: str = Header(default="")):
     result = []
 
     for c in containers:
-        name = c.name  # mtg-admin, mtg-liza, etc.
+        name = c.name
         running = c.status == "running"
-
         devices = get_connections(c) if running else 0
         traffic = get_traffic(c) if running else {"rx": "—", "tx": "—", "rx_bytes": 0, "tx_bytes": 0}
 
@@ -113,7 +102,7 @@ def metrics(x_agent_token: str = Header(default="")):
             "name": name,
             "running": running,
             "status": c.status,
-            "connections": devices,   # unique IPs = approximate device count
+            "connections": devices,
             "devices": devices,
             "is_online": devices > 0,
             "traffic": traffic,
