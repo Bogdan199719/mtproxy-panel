@@ -17,15 +17,12 @@ try { pkgVersion = require('../package.json').version; } catch (_) {}
 // ── DB Migrations ─────────────────────────────────────────
 function runMigrations() {
   const migrations = [
-    // Nodes: country flag
     "ALTER TABLE nodes ADD COLUMN flag TEXT DEFAULT NULL",
-    // Users: traffic snapshot (saved before stop/reset)
+    "ALTER TABLE nodes ADD COLUMN agent_port INTEGER DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN traffic_rx_snap TEXT DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN traffic_tx_snap TEXT DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN traffic_reset_at DATETIME DEFAULT NULL",
-    // Users: last seen online
     "ALTER TABLE users ADD COLUMN last_seen_at DATETIME DEFAULT NULL",
-    // Users: billing prep fields
     "ALTER TABLE users ADD COLUMN billing_price REAL DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN billing_currency TEXT DEFAULT 'RUB'",
     "ALTER TABLE users ADD COLUMN billing_period TEXT DEFAULT 'monthly'",
@@ -33,7 +30,7 @@ function runMigrations() {
     "ALTER TABLE users ADD COLUMN billing_status TEXT DEFAULT 'active'",
   ];
   for (const sql of migrations) {
-    try { db.prepare(sql).run(); } catch (_) {} // Ignore "column already exists"
+    try { db.prepare(sql).run(); } catch (_) {}
   }
 }
 runMigrations();
@@ -106,30 +103,31 @@ app.post('/api/totp/disable', (req, res) => {
 
 // ── Nodes ─────────────────────────────────────────────────
 app.get('/api/nodes', (req, res) => {
-  res.json(db.prepare('SELECT id, name, host, ssh_user, ssh_port, base_dir, start_port, created_at, flag FROM nodes').all());
+  res.json(db.prepare('SELECT id, name, host, ssh_user, ssh_port, base_dir, start_port, created_at, flag, agent_port FROM nodes').all());
 });
 
 app.post('/api/nodes', (req, res) => {
-  const { name, host, ssh_user, ssh_port, ssh_key, ssh_password, base_dir, start_port, flag } = req.body;
+  const { name, host, ssh_user, ssh_port, ssh_key, ssh_password, base_dir, start_port, flag, agent_port } = req.body;
   if (!name || !host) return res.status(400).json({ error: 'name и host обязательны' });
   const result = db.prepare(
-    'INSERT INTO nodes (name, host, ssh_user, ssh_port, ssh_key, ssh_password, base_dir, start_port, flag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(name, host, ssh_user||'root', ssh_port||22, ssh_key||null, ssh_password||null, base_dir||'/opt/mtg/users', start_port||4433, flag||null);
+    'INSERT INTO nodes (name, host, ssh_user, ssh_port, ssh_key, ssh_password, base_dir, start_port, flag, agent_port) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(name, host, ssh_user||'root', ssh_port||22, ssh_key||null, ssh_password||null, base_dir||'/opt/mtg/users', start_port||4433, flag||null, agent_port||null);
   res.json({ id: result.lastInsertRowid, name, host });
 });
 
 app.put('/api/nodes/:id', (req, res) => {
-  const { name, host, ssh_user, ssh_port, ssh_key, ssh_password, base_dir, start_port, flag } = req.body;
+  const { name, host, ssh_user, ssh_port, ssh_key, ssh_password, base_dir, start_port, flag, agent_port } = req.body;
   const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(req.params.id);
   if (!node) return res.status(404).json({ error: 'Node not found' });
   db.prepare(
-    'UPDATE nodes SET name=?, host=?, ssh_user=?, ssh_port=?, ssh_key=?, ssh_password=?, base_dir=?, start_port=?, flag=? WHERE id=?'
+    'UPDATE nodes SET name=?, host=?, ssh_user=?, ssh_port=?, ssh_key=?, ssh_password=?, base_dir=?, start_port=?, flag=?, agent_port=? WHERE id=?'
   ).run(
     name||node.name, host||node.host, ssh_user||node.ssh_user, ssh_port||node.ssh_port,
     ssh_key!==undefined ? ssh_key : node.ssh_key,
     ssh_password!==undefined ? ssh_password : node.ssh_password,
     base_dir||node.base_dir, start_port||node.start_port,
     flag!==undefined ? flag : node.flag,
+    agent_port!==undefined ? (agent_port||null) : node.agent_port,
     req.params.id
   );
   res.json({ ok: true });
@@ -138,6 +136,19 @@ app.put('/api/nodes/:id', (req, res) => {
 app.delete('/api/nodes/:id', (req, res) => {
   db.prepare('DELETE FROM nodes WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
+});
+
+// Check agent health on a node
+app.get('/api/nodes/:id/check-agent', async (req, res) => {
+  const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(req.params.id);
+  if (!node) return res.status(404).json({ error: 'Not found' });
+  if (!node.agent_port) return res.json({ available: false, reason: 'no agent_port configured' });
+  try {
+    const ok = await ssh.checkAgentHealth(node);
+    res.json({ available: ok });
+  } catch (e) {
+    res.json({ available: false, reason: e.message });
+  }
 });
 
 app.get('/api/nodes/:id/check', async (req, res) => {
