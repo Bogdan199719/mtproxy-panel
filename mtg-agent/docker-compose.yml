@@ -3,11 +3,11 @@ services:
     image: python:3.12-alpine
     container_name: mtg-agent
     restart: unless-stopped
-    network_mode: host          # видит все соединения хоста напрямую
-    ports: []                   # не нужны при host mode — порт 8081 и так доступен
+    network_mode: host
+    pid: host                   # видит все PID хоста — читаем /proc/{pid}/net/tcp6
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /proc:/proc:ro          # читаем /proc/net/tcp хоста
+      - /proc:/proc:ro
       - ./main.py:/app/main.py:ro
     working_dir: /app
     environment:
