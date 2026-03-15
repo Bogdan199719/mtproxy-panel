@@ -743,6 +743,38 @@ const COUNTRIES = [
 ];
 const flagUrl = (code) => code ? `https://flagcdn.com/20x15/${code}.png` : null;
 
+/* ── Shared UI components ───────────────────────────────── */
+function expiryBadge(expires_at, small) {
+  if(!expires_at) return <span style={{color:'var(--t3)',fontSize:small?11:12}}>∞</span>;
+  const d = Math.floor((new Date(expires_at) - new Date()) / 86400000);
+  if(d < 0) return <span className="badge badge-red">истёк</span>;
+  return <span style={{fontFamily:'var(--mono)',fontSize:small?11:12,color:d<3?'var(--am)':'var(--t2)'}}>{d}д</span>;
+}
+function StatPill({count, label, color, dot, large}) {
+  const sz = large ? {num:26, lbl:11, pad:'12px 18px', r:12} : {num:14, lbl:11, pad:'5px 11px', r:8};
+  return (
+    <div style={{display:'flex', flexDirection: large?'column':'row', alignItems:'center', gap: large?4:5,
+      background:`rgba(${color},0.1)`, borderRadius:sz.r, padding:sz.pad,
+      whiteSpace:'nowrap', flex: large?1:undefined, minWidth: large?80:undefined}}>
+      {large ? (
+        <>
+          <div style={{display:'flex',alignItems:'center',gap:5}}>
+            {dot && <span className={`dot ${dot}`}/>}
+            <span style={{fontSize:sz.num,fontWeight:800,letterSpacing:'-1px',color:`rgb(${color})`}}>{count}</span>
+          </div>
+          <span style={{fontSize:sz.lbl,color:'var(--t3)',fontWeight:500}}>{label}</span>
+        </>
+      ) : (
+        <>
+          {dot && <span className={`dot ${dot}`}/>}
+          <span style={{fontSize:sz.num,fontWeight:700,color:`rgb(${color})`}}>{count}</span>
+          <span style={{fontSize:sz.lbl,color:'var(--t3)'}}>{label}</span>
+        </>
+      )}
+    </div>
+  );
+}
+
 function FlagPicker({ value, onChange }) {
   const [open, setOpen] = useState(false);
   const current = COUNTRIES.find(c => c.code === value);
@@ -1000,8 +1032,8 @@ function Dashboard({ nodes, onSelectNode, onManageNode }) {
 
   useEffect(() => { load(); const t = setInterval(()=>load(true), 15000); return ()=>clearInterval(t); }, []);
 
-  const totalUsers  = useMemo(() => nodes.reduce((a,n)=>a+(n._userCount||0),0), [nodes]);
-  const onlineNodes = useMemo(() => status.filter(s=>s.online).length, [status]);
+  const totalUsers    = useMemo(() => nodes.reduce((a,n)=>a+(n._userCount||0),0), [nodes]);
+  const onlineNodes   = useMemo(() => status.filter(s=>s.online).length, [status]);
   const activeProxies = useMemo(() => status.reduce((a,s)=>a+(s.containers||0),0), [status]);
   const stoppedProxies = totalUsers - activeProxies;
 
@@ -1018,56 +1050,22 @@ function Dashboard({ nodes, onSelectNode, onManageNode }) {
         </div>
       </div>
 
-      {/* 2 stat cards */}
+      {/* 2 summary cards */}
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:24}}>
-
-        {/* Nodes card */}
         <div className="card" style={{padding:'20px 24px'}}>
-          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
-            <div style={{width:36,height:36,borderRadius:10,background:'rgba(124,111,247,0.15)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7c6ff7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-            </div>
-            <div style={{fontSize:13,fontWeight:600,color:'var(--t2)'}}>Ноды</div>
-          </div>
-          <div style={{fontSize:40,fontWeight:700,letterSpacing:'-1px',color:'var(--t1)',lineHeight:1,marginBottom:14}}>{nodes.length}</div>
-          <div style={{display:'flex',gap:10}}>
-            <div style={{display:'flex',alignItems:'center',gap:6,background:'rgba(34,197,94,0.1)',borderRadius:8,padding:'6px 12px'}}>
-              <span className="dot dot-live"/>
-              <span style={{fontSize:13,fontWeight:600,color:'var(--gr)'}}>{onlineNodes}</span>
-              <span style={{fontSize:11,color:'var(--t3)'}}>онлайн</span>
-            </div>
-            {nodes.length - onlineNodes > 0 && (
-              <div style={{display:'flex',alignItems:'center',gap:6,background:'rgba(251,113,133,0.1)',borderRadius:8,padding:'6px 12px'}}>
-                <span className="dot"/>
-                <span style={{fontSize:13,fontWeight:600,color:'var(--re)'}}>{nodes.length - onlineNodes}</span>
-                <span style={{fontSize:11,color:'var(--t3)'}}>офлайн</span>
-              </div>
-            )}
+          <div style={{fontSize:12,fontWeight:600,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'1px',marginBottom:10}}>Ноды</div>
+          <div style={{fontSize:42,fontWeight:800,letterSpacing:'-1.5px',color:'var(--t1)',lineHeight:1,marginBottom:14}}>{nodes.length}</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <StatPill count={onlineNodes} label="онлайн" color="34,197,94" dot="dot-live"/>
+            {nodes.length - onlineNodes > 0 && <StatPill count={nodes.length-onlineNodes} label="офлайн" color="251,113,133" dot=""/>}
           </div>
         </div>
-
-        {/* Clients card */}
         <div className="card" style={{padding:'20px 24px'}}>
-          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
-            <div style={{width:36,height:36,borderRadius:10,background:'rgba(56,189,248,0.12)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-            </div>
-            <div style={{fontSize:13,fontWeight:600,color:'var(--t2)'}}>Клиенты</div>
-          </div>
-          <div style={{fontSize:40,fontWeight:700,letterSpacing:'-1px',color:'var(--t1)',lineHeight:1,marginBottom:14}}>{totalUsers}</div>
-          <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
-            <div style={{display:'flex',alignItems:'center',gap:6,background:'rgba(34,197,94,0.1)',borderRadius:8,padding:'6px 12px'}}>
-              <span className="dot dot-live"/>
-              <span style={{fontSize:13,fontWeight:600,color:'var(--gr)'}}>{activeProxies}</span>
-              <span style={{fontSize:11,color:'var(--t3)'}}>активных</span>
-            </div>
-            {stoppedProxies > 0 && (
-              <div style={{display:'flex',alignItems:'center',gap:6,background:'rgba(251,113,133,0.08)',borderRadius:8,padding:'6px 12px'}}>
-                <span className="dot"/>
-                <span style={{fontSize:13,fontWeight:600,color:'var(--re)'}}>{stoppedProxies}</span>
-                <span style={{fontSize:11,color:'var(--t3)'}}>на стопе</span>
-              </div>
-            )}
+          <div style={{fontSize:12,fontWeight:600,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'1px',marginBottom:10}}>Клиенты</div>
+          <div style={{fontSize:42,fontWeight:800,letterSpacing:'-1.5px',color:'var(--t1)',lineHeight:1,marginBottom:14}}>{totalUsers}</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <StatPill count={activeProxies} label="активных" color="34,197,94" dot="dot-live"/>
+            {stoppedProxies > 0 && <StatPill count={stoppedProxies} label="остановлен" color="251,113,133" dot=""/>}
           </div>
         </div>
       </div>
@@ -1080,72 +1078,47 @@ function Dashboard({ nodes, onSelectNode, onManageNode }) {
           <div className="grid-2">
             {nodes.map(node => {
               const s = status.find(x=>x.id===node.id)||{};
-              const total = node._userCount||0;
-              const active = s.containers||0;
+              const total   = node._userCount||0;
+              const active  = s.containers||0;
               const stopped = total - active;
 
               return (
-                <div className="card" key={node.id} style={{padding:0,overflow:'hidden',cursor:'pointer',transition:'border-color var(--tx)'}}
+                <div className="card" key={node.id}
+                  style={{padding:0,overflow:'hidden',cursor:'pointer',transition:'border-color .15s'}}
                   onClick={()=>onSelectNode(node)}>
 
-                  {/* Header */}
-                  <div style={{padding:'20px 20px 16px',borderBottom:'1px solid var(--b1)'}}>
-                    <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12}}>
-
-                      {/* Name + flag + host */}
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
-                          {node.flag && (
-                            <img src={flagUrl(node.flag)} alt={node.flag}
-                              style={{width:28,height:21,objectFit:'cover',borderRadius:3,boxShadow:'0 1px 4px rgba(0,0,0,0.3)',flexShrink:0}}/>
-                          )}
-                          <span style={{fontSize:18,fontWeight:700,letterSpacing:'-0.3px',color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                            {node.name}
-                          </span>
-                        </div>
-                        <div style={{fontSize:12,color:'var(--t3)',fontFamily:'var(--mono)'}}>{node.host}</div>
+                  {/* Header row */}
+                  <div style={{padding:'18px 20px 14px',borderBottom:'1px solid var(--b1)',display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:5}}>
+                        {node.flag && <img src={flagUrl(node.flag)} alt={node.flag} style={{width:28,height:21,objectFit:'cover',borderRadius:3,boxShadow:'0 1px 4px rgba(0,0,0,.3)',flexShrink:0}}/>}
+                        <span style={{fontSize:18,fontWeight:700,letterSpacing:'-0.3px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                          {node.name}
+                        </span>
                       </div>
-
-                      {/* Online badge */}
-                      <span className={`badge ${s.online?'badge-green':'badge-red'}`} style={{flexShrink:0}}>
-                        <span className={`dot ${s.online?'dot-live':''}`}/>
-                        {s.online?'online':'offline'}
-                      </span>
+                      <div style={{fontSize:12,color:'var(--t3)',fontFamily:'var(--mono)'}}>{node.host}</div>
                     </div>
+                    <span className={`badge ${s.online?'badge-green':'badge-red'}`} style={{flexShrink:0}}>
+                      <span className={`dot ${s.online?'dot-live':''}`}/>{s.online?'онлайн':'офлайн'}
+                    </span>
                   </div>
 
-                  {/* Stats */}
-                  <div style={{padding:'14px 20px',display:'flex',gap:10,flexWrap:'wrap'}}>
-                    <div style={{display:'flex',alignItems:'center',gap:5,background:'rgba(34,197,94,0.1)',borderRadius:8,padding:'5px 10px'}}>
-                      <span className="dot dot-live"/>
-                      <span style={{fontSize:13,fontWeight:600,color:'var(--gr)'}}>{active}</span>
-                      <span style={{fontSize:11,color:'var(--t3)'}}>active</span>
-                    </div>
-                    <div style={{display:'flex',alignItems:'center',gap:5,background:'rgba(124,111,247,0.1)',borderRadius:8,padding:'5px 10px'}}>
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#7c6ff7" strokeWidth="2.5"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
-                      <span style={{fontSize:13,fontWeight:600,color:'var(--vi)'}}>{total}</span>
-                      <span style={{fontSize:11,color:'var(--t3)'}}>всего</span>
-                    </div>
-                    {stopped > 0 && (
-                      <div style={{display:'flex',alignItems:'center',gap:5,background:'rgba(251,113,133,0.08)',borderRadius:8,padding:'5px 10px'}}>
-                        <span className="dot"/>
-                        <span style={{fontSize:13,fontWeight:600,color:'var(--re)'}}>{stopped}</span>
-                        <span style={{fontSize:11,color:'var(--t3)'}}>стоп</span>
-                      </div>
-                    )}
+                  {/* 4 stat pills */}
+                  <div style={{padding:'12px 20px',display:'flex',gap:8,flexWrap:'wrap',borderBottom:'1px solid var(--b1)'}}>
+                    <StatPill count={total}   label="всего"     color="124,111,247" dot={null}/>
+                    <StatPill count={active}  label="активных"  color="34,197,94"  dot="dot-live"/>
+                    {stopped > 0 && <StatPill count={stopped} label="остановлен" color="251,113,133" dot=""/>}
                   </div>
 
                   {/* Actions */}
-                  <div style={{padding:'0 20px 16px',display:'flex',gap:8}}>
+                  <div style={{padding:'12px 20px',display:'flex',gap:8}}>
                     <button className="btn btn-primary btn-sm" style={{flex:1,justifyContent:'center'}}
                       onClick={e=>{e.stopPropagation(); onManageNode(node);}}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                      Клиенты
+                      <I.Users/> Клиенты
                     </button>
                     <button className="btn btn-secondary btn-sm" style={{flex:1,justifyContent:'center'}}
                       onClick={e=>{e.stopPropagation(); onSelectNode(node);}}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-                      Нода
+                      <I.Server/> Нода
                     </button>
                   </div>
                 </div>
@@ -1153,10 +1126,8 @@ function Dashboard({ nodes, onSelectNode, onManageNode }) {
             })}
             {!nodes.length && (
               <div style={{gridColumn:'1/-1'}}>
-                <div className="empty">
-                  <div className="empty-icon"><I.Server/></div>
-                  <div className="empty-title">Нет нод</div>
-                  <div className="empty-desc">Добавь первую ноду</div>
+                <div className="empty"><div className="empty-icon"><I.Server/></div>
+                  <div className="empty-title">Нет нод</div><div className="empty-desc">Добавь первую ноду</div>
                 </div>
               </div>
             )}
@@ -1299,60 +1270,26 @@ function NodeModal({ node, onClose, onSave }) {
 }
 
 /* ── Nodes Page ─────────────────────────────────────────── */
-function NodesPage({ nodes, onReload, onManage }) {
+/* ── Nodes List Page ─────────────────────────────────────── */
+function NodesPage({ nodes, onReload, onManage, onOpenNode }) {
   const [modal, setModal] = useState(false);
   const [edit, setEdit] = useState(null);
-  const [pings, setPings] = useState({});
-  const [showInfo, setShowInfo] = useState({});
+  const [status, setStatus] = useState([]);
 
-  // SSH check — measures connection establishment time, NOT network latency
-  const checkNode = useCallback(async (node) => {
-    setPings(p => ({...p, [node.id]: {...(p[node.id]||{}), checking: true}}));
-    try {
-      const r = await api('GET', `/api/nodes/${node.id}/check`);
-      setPings(p => ({...p, [node.id]: { online: r.online, checking: false }}));
-    } catch {
-      setPings(p => ({...p, [node.id]: { online: false, checking: false }}));
-    }
+  const loadStatus = useCallback(async () => {
+    try { const s = await api('GET','/api/status'); setStatus(s); } catch {}
   }, []);
 
-  // Auto-check on mount + every 20 seconds
   useEffect(() => {
-    nodes.forEach(n => checkNode(n));
-    const t = setInterval(() => nodes.forEach(n => checkNode(n)), 20000);
+    loadStatus();
+    const t = setInterval(loadStatus, 20000);
     return () => clearInterval(t);
-  }, [nodes.length]);
+  }, []);
 
   const del = async (node) => {
     if(!confirm(`Удалить ноду ${node.name}?`)) return;
     try { await api('DELETE',`/api/nodes/${node.id}`); toast('Нода удалена','success'); onReload(); }
     catch(e) { toast(e.message,'error'); }
-  };
-
-  const toggleInfo = (id) => setShowInfo(s => ({...s, [id]: !s[id]}));
-
-  const StatusBadge = ({ nodeId }) => {
-    const p = pings[nodeId];
-    if(!p) return (
-      <span className="badge" style={{background:'var(--b1)',color:'var(--t3)'}}>
-        <span className="spin spin-sm" style={{width:9,height:9}}/> проверка
-      </span>
-    );
-    if(p.checking && !p.online && p.online !== false) return (
-      <span className="badge" style={{background:'var(--b1)',color:'var(--t3)'}}>
-        <span className="spin spin-sm" style={{width:9,height:9}}/> проверка
-      </span>
-    );
-    if(!p.online) return (
-      <span className="badge badge-red"><span className="dot"/>offline</span>
-    );
-    return (
-      <span className="badge badge-green" title="SSH соединение установлено">
-        <span className={`dot ${p.checking?'':'dot-live'}`}/>
-        online
-        {p.checking && <span className="spin spin-sm" style={{width:9,height:9,marginLeft:4,borderTopColor:'var(--gr)'}}/>}
-      </span>
-    );
   };
 
   return (
@@ -1369,56 +1306,189 @@ function NodesPage({ nodes, onReload, onManage }) {
         </div>
       </div>
 
-      {!nodes.length ? (
-        <div className="card"><div className="empty"><div className="empty-icon"><I.Server/></div><div className="empty-title">Нет нод</div><div className="empty-desc">Добавь первую ноду для начала работы</div></div></div>
-      ) : (
-        <div className="grid-2">
-          {nodes.map(node => (
-            <div className="node-card" key={node.id}>
-              <div className="node-head">
-                <div style={{display:'flex',alignItems:'center',gap:12}}>
-                  <div className="node-icon"><I.Server/></div>
-                  <div className="node-info">
-                    <div className="node-name" style={{display:'flex',alignItems:'center',gap:8}}>
-                      {node.name}
-                      {node.flag && <img src={flagUrl(node.flag)} alt={node.flag} style={{width:20,height:15,objectFit:'cover',borderRadius:2,opacity:.9}}/>}
+      {!nodes.length
+        ? <div className="card"><div className="empty"><div className="empty-icon"><I.Server/></div><div className="empty-title">Нет нод</div><div className="empty-desc">Добавь первую ноду</div></div></div>
+        : (
+          <div className="grid-2">
+            {nodes.map(node => {
+              const s = status.find(x=>x.id===node.id)||{};
+              const total   = node._userCount||0;
+              const active  = s.containers||0;
+              const stopped = total - active;
+              return (
+                <div className="card" key={node.id} style={{padding:0,overflow:'hidden',cursor:'pointer'}}
+                  onClick={()=>onOpenNode(node)}>
+                  <div style={{padding:'18px 20px 14px',borderBottom:'1px solid var(--b1)',display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:5}}>
+                        {node.flag && <img src={flagUrl(node.flag)} alt={node.flag} style={{width:26,height:19,objectFit:'cover',borderRadius:3,boxShadow:'0 1px 4px rgba(0,0,0,.3)',flexShrink:0}}/>}
+                        <span style={{fontSize:17,fontWeight:700,letterSpacing:'-0.3px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{node.name}</span>
+                        {node.agent_port && <span className="badge badge-purple" style={{fontSize:10,padding:'2px 6px'}}>Agent</span>}
+                      </div>
+                      <div style={{fontSize:12,color:'var(--t3)',fontFamily:'var(--mono)'}}>{node.host}</div>
                     </div>
-                    <div className="node-host">{node.host}</div>
+                    <span className={`badge ${s.online?'badge-green':'badge-red'}`} style={{flexShrink:0}}>
+                      <span className={`dot ${s.online?'dot-live':''}`}/>{s.online?'онлайн':'офлайн'}
+                    </span>
+                  </div>
+                  <div style={{padding:'11px 20px',display:'flex',gap:8,flexWrap:'wrap',borderBottom:'1px solid var(--b1)'}}>
+                    <StatPill count={total}  label="всего"      color="124,111,247" dot={null}/>
+                    <StatPill count={active} label="активных"   color="34,197,94"  dot="dot-live"/>
+                    {stopped > 0 && <StatPill count={stopped} label="остановлен" color="251,113,133" dot=""/>}
+                  </div>
+                  <div style={{padding:'11px 20px',display:'flex',gap:8,alignItems:'center'}}>
+                    <button className="btn btn-primary btn-sm" style={{flex:1,justifyContent:'center'}}
+                      onClick={e=>{e.stopPropagation();onManage(node);}}>
+                      <I.Users/> Клиенты
+                    </button>
+                    <button className="btn btn-secondary btn-sm" onClick={e=>{e.stopPropagation();setEdit(node);setModal(true);}}>
+                      <I.Edit/>
+                    </button>
+                    <button className="btn btn-danger btn-sm" onClick={e=>{e.stopPropagation();del(node);}}>
+                      <I.Trash/>
+                    </button>
                   </div>
                 </div>
-                <StatusBadge nodeId={node.id}/>
-              </div>
+              );
+            })}
+          </div>
+        )
+      }
+      {modal && <NodeModal node={edit} onClose={()=>setModal(false)} onSave={()=>{setModal(false);onReload();}}/>}
+    </div>
+  );
+}
 
-              {showInfo[node.id] && (
-                <div className="node-info-row">
-                  <div>SSH: <span style={{color:'var(--t2)'}}>{node.ssh_user}@{node.host}:{node.ssh_port}</span></div>
-                  <div>Base dir: <span style={{color:'var(--t2)'}}>{node.base_dir}</span></div>
-                  <div>Start port: <span style={{color:'var(--t2)'}}>{node.start_port}</span></div>
-                </div>
-              )}
+/* ── Node Detail Page ────────────────────────────────────── */
+function NodePage({ node, onBack, onManage, onReload }) {
+  const [status, setStatus] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [traffic, setTraffic] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [modalEdit, setModalEdit] = useState(false);
 
-              <div className="node-actions" style={{marginTop:14}}>
-                <button className="btn btn-primary btn-sm" onClick={()=>onManage(node)}>
-                  <I.Users/>
-                  Клиенты
-                  {node._userCount > 0 && <span style={{marginLeft:4,background:'rgba(255,255,255,0.18)',borderRadius:4,padding:'1px 6px',fontSize:11,fontWeight:600}}>{node._userCount}</span>}
-                </button>
-                {node.agent_port && (
-                  <span className="badge badge-purple btn-sm" title={`Агент: порт ${node.agent_port}`} style={{padding:'6px 10px'}}>
-                    <I.Activity style={{width:12,height:12}}/> Agent
-                  </span>
-                )}
-                <button className="btn btn-secondary btn-sm" onClick={()=>toggleInfo(node.id)}>
-                  <I.Info/> {showInfo[node.id]?'Скрыть':'Инфо'}
-                </button>
-                <button className="btn btn-secondary btn-sm" onClick={()=>{setEdit(node);setModal(true);}}><I.Edit/></button>
-                <button className="btn btn-danger btn-sm" onClick={()=>del(node)}><I.Trash/></button>
-              </div>
+  const loadData = useCallback(async () => {
+    try {
+      const [st, u, tr] = await Promise.allSettled([
+        api('GET', `/api/nodes/${node.id}/check`),
+        api('GET', `/api/nodes/${node.id}/users`),
+        api('GET', `/api/nodes/${node.id}/traffic`),
+      ]);
+      if(st.status==='fulfilled') setStatus(st.value);
+      if(u.status==='fulfilled')  setUsers(u.value||[]);
+      if(tr.status==='fulfilled') setTraffic(tr.value||{});
+    } catch {} finally { setLoading(false); }
+  }, [node.id]);
+
+  useEffect(() => {
+    loadData();
+    const t = setInterval(loadData, 20000);
+    return () => clearInterval(t);
+  }, [loadData]);
+
+  const isOnline = status ? status.online : null;
+  const active      = users.filter(u => u.running).length;
+  const stopped     = users.filter(u => !u.running).length;
+  const onlineUsers = users.filter(u => u.is_online).length;
+
+  return (
+    <div className="pg">
+      <div className="topbar">
+        <div className="topbar-left" style={{display:'flex',alignItems:'center',gap:14}}>
+          <button className="btn btn-ghost btn-sm" onClick={onBack}><I.ArrowLeft/> Назад</button>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            {node.flag && <img src={flagUrl(node.flag)} alt={node.flag} style={{width:28,height:21,objectFit:'cover',borderRadius:3,boxShadow:'0 1px 4px rgba(0,0,0,.3)'}}/>}
+            <div>
+              <div className="page-title" style={{marginBottom:0}}><em>{node.name}</em></div>
+              <div style={{fontSize:12,color:'var(--t3)',fontFamily:'var(--mono)'}}>{node.host}</div>
             </div>
-          ))}
+          </div>
+        </div>
+        <div className="topbar-right">
+          <button className="btn btn-ghost btn-sm" onClick={loadData}><I.RefreshCw/></button>
+          <button className="btn btn-secondary btn-sm" onClick={()=>setModalEdit(true)}><I.Edit/> Настройки</button>
+          <button className="btn btn-primary btn-sm" onClick={()=>onManage(node)}><I.Users/> Клиенты</button>
+        </div>
+      </div>
+
+      {/* Status + SSH info */}
+      <div className="card" style={{marginBottom:16,padding:'18px 20px'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:14}}>
+          <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
+            <div>
+              <div style={{fontSize:11,color:'var(--t3)',marginBottom:4}}>SSH</div>
+              <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--t2)'}}>{node.ssh_user}@{node.host}:{node.ssh_port}</div>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:'var(--t3)',marginBottom:4}}>Базовая директория</div>
+              <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--t2)'}}>{node.base_dir}</div>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:'var(--t3)',marginBottom:4}}>Начальный порт</div>
+              <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--t2)'}}>{node.start_port}</div>
+            </div>
+            {node.agent_port && (
+              <div>
+                <div style={{fontSize:11,color:'var(--t3)',marginBottom:4}}>Агент</div>
+                <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--vi)'}}>:{node.agent_port}</div>
+              </div>
+            )}
+          </div>
+          <span className={`badge ${isOnline===null?'':isOnline?'badge-green':'badge-red'}`} style={{fontSize:13,padding:'8px 14px'}}>
+            <span className={`dot ${isOnline?'dot-live':''}`}/>
+            {isOnline===null ? 'проверка...' : isOnline ? 'онлайн' : 'офлайн'}
+          </span>
+        </div>
+      </div>
+
+      {/* 4 stat pills */}
+      {!loading && (
+        <div style={{display:'flex',gap:12,marginBottom:16,flexWrap:'wrap'}}>
+          <StatPill count={users.length} label="Всего"       color="124,111,247" dot={null}   large/>
+          <StatPill count={active}       label="Активных"    color="34,197,94"  dot="dot-live" large/>
+          <StatPill count={onlineUsers}  label="Онлайн"      color="56,189,248" dot="dot-live" large/>
+          {stopped > 0 && <StatPill count={stopped} label="Остановлен" color="251,113,133" dot="" large/>}
         </div>
       )}
-      {modal && <NodeModal node={edit} onClose={()=>setModal(false)} onSave={()=>{setModal(false);onReload();}}/>}
+
+      {/* Clients table */}
+      <div className="card">
+        {loading ? <div className="loading-center"><span className="spin"/> Загружаю...</div> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Клиент</th><th>Порт</th><th>Онлайн</th><th>Устройств</th>
+                <th>Трафик</th><th>Статус</th><th>Срок</th><th>Действия</th>
+              </tr></thead>
+              <tbody>
+                {users.map(u => {
+                  const traf = u.running ? traffic[u.name] : (u.traffic_rx_snap ? {rx:u.traffic_rx_snap, tx:u.traffic_tx_snap} : traffic[u.name]);
+                  return (
+                    <tr key={u.id} style={{opacity:u.expired?0.5:1}}>
+                      <td><span style={{fontFamily:'var(--mono)',fontWeight:600,fontSize:14}}>{u.name}</span></td>
+                      <td><span className="badge badge-purple">{u.port}</span></td>
+                      <td>{u.is_online ? <span className="badge badge-green"><span className="dot dot-live"/>онлайн</span> : <span style={{color:'var(--t3)',fontSize:12}}>—</span>}</td>
+                      <td><span style={{fontFamily:'var(--mono)',fontWeight:500,fontSize:14,color:u.connections>0?'var(--vi)':'var(--t3)'}}>{u.connections}{u.max_devices?`/${u.max_devices}`:''}</span></td>
+                      <td>{traf ? <span className="traf"><span className="rx">↓{traf.rx}</span><span className="tx"> ↑{traf.tx}</span></span> : <span style={{color:'var(--t3)',fontSize:12}}>—</span>}</td>
+                      <td><span className={`badge ${u.running?'badge-green':'badge-red'}`}><span className={`dot ${u.running?'dot-live':''}`}/>{u.running?'активен':'остановлен'}</span></td>
+                      <td>{expiryBadge(u.expires_at)}</td>
+                      <td>
+                        <div className="acts">
+                          <button className="btn btn-icon btn-secondary btn-sm" onClick={()=>copyText(u.link)} title="Копировать ссылку"><I.Copy/></button>
+                          <button className="btn btn-icon btn-secondary btn-sm" onClick={()=>onManage(node)} title="Управление клиентом"><I.Edit/></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!users.length && <tr><td colSpan={8}><div className="empty"><div className="empty-icon"><I.Users/></div><div className="empty-title">Нет клиентов</div></div></td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {modalEdit && <NodeModal node={node} onClose={()=>setModalEdit(false)} onSave={()=>{setModalEdit(false);onReload();}}/>}
     </div>
   );
 }
@@ -1713,15 +1783,6 @@ function UsersPage({ node, onBack }) {
     finally{setBusyFor(user.name+'_reset', false);}
   };
 
-  const expiry = (expires_at) => {
-    if(!expires_at) return null;
-    const diff = new Date(expires_at) - new Date();
-    if(diff<0) return <span className="badge badge-red">истёк</span>;
-    const d = Math.floor(diff/86400000);
-    if(d<1) return <span className="badge badge-amber">&lt;1д</span>;
-    return <span style={{fontSize:11,color:'var(--t2)',fontFamily:'var(--mono)'}}>{d}д</span>;
-  };
-
   return (
     <div className="pg">
       <div className="topbar">
@@ -1795,7 +1856,7 @@ function UsersPage({ node, onBack }) {
                     </td>
                     <td>
                       <div style={{display:'flex',flexDirection:'column',gap:3}}>
-                        {u.expires_at && <div>{expiry(u.expires_at)}</div>}
+                        {u.expires_at && <div>{expiryBadge(u.expires_at)}</div>}
                         {u.traffic_limit_gb && <span style={{fontSize:11,color:'var(--t3)',fontFamily:'var(--mono)'}}>{u.traffic_limit_gb}GB</span>}
                         {!u.expires_at && !u.traffic_limit_gb && <span style={{color:'var(--t3)',fontSize:12}}>∞</span>}
                         {u.traffic_reset_interval && u.traffic_reset_interval !== 'never' && (
@@ -1942,16 +2003,7 @@ function AllUsers({ nodes, onSelectNode }) {
                                 <span className={`dot ${u.running?'dot-live':''}`}/>{u.running?'active':'stopped'}
                               </span>
                             </td>
-                            <td>
-                              {u.expires_at
-                                ? (() => {
-                                    const diff = new Date(u.expires_at) - new Date();
-                                    if(diff < 0) return <span className="badge badge-red">истёк</span>;
-                                    const d = Math.floor(diff/86400000);
-                                    return <span style={{fontSize:11,color: d<3?'var(--am)':'var(--t2)',fontFamily:'var(--mono)'}}>{d}д</span>;
-                                  })()
-                                : <span style={{color:'var(--t3)',fontSize:11}}>∞</span>}
-                            </td>
+                            <td>{expiryBadge(u.expires_at, true)}</td>
                             <td style={{maxWidth:100,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12,color:'var(--t2)'}} title={u.note}>
                               {u.note || <span style={{color:'var(--t3)'}}>—</span>}
                             </td>
@@ -2091,7 +2143,8 @@ function App() {
   const [authed, setAuthed] = useState(!!getToken());
   const [page, setPage] = useState('dashboard');
   const [nodes, setNodes] = useState([]);
-  const [selNode, setSelNode] = useState(null);
+  const [selNode, setSelNode] = useState(null);      // for users page
+  const [selNodeView, setSelNodeView] = useState(null); // for node detail page
   const [panelVersion, setPanelVersion] = useState(null);
   const toasts = useToast();
 
@@ -2109,7 +2162,6 @@ function App() {
     } catch {}
   }, []);
 
-  // Load panel version once on mount
   useEffect(() => {
     api('GET', '/api/version')
       .then(r => setPanelVersion(r.version ? (r.version.startsWith('v') ? r.version : `v${r.version}`) : null))
@@ -2119,8 +2171,9 @@ function App() {
   useEffect(()=>{ if(authed) loadNodes(); },[authed]);
   useEffect(()=>{ if(nodes.length&&!nodes[0]._userCount) loadCounts(nodes); },[nodes]);
 
-  const nav = (p) => { setPage(p); if(p!=='users') setSelNode(null); };
+  const nav = (p) => { setPage(p); setSelNode(null); setSelNodeView(null); };
   const selectNode = (n) => { setSelNode(n); setPage('users'); };
+  const openNodeView = (n) => { setSelNodeView(n); setPage('node'); };
 
   const NAV = [
     { id:'dashboard', icon:<I.LayoutDash/>, label:'Дашборд' },
@@ -2145,7 +2198,7 @@ function App() {
         <nav className="nav">
           <div className="nav-section">Навигация</div>
           {NAV.map(item => (
-            <div key={item.id} className={`nav-item ${page===item.id?'active':''}`} onClick={()=>nav(item.id)}>
+            <div key={item.id} className={`nav-item ${(page===item.id||(page==='node'&&item.id==='nodes'))?'active':''}`} onClick={()=>nav(item.id)}>
               {item.icon}{item.label}
             </div>
           ))}
@@ -2162,10 +2215,11 @@ function App() {
       </aside>
 
       <main className="main">
-        {page==='dashboard' && <Dashboard nodes={nodes} onSelectNode={n=>{setSelNode(n);setPage('nodes');}} onManageNode={selectNode}/>}
-        {page==='nodes'     && <NodesPage nodes={nodes} onReload={loadNodes} onManage={selectNode}/>}
+        {page==='dashboard' && <Dashboard nodes={nodes} onSelectNode={openNodeView} onManageNode={selectNode}/>}
+        {page==='nodes'     && <NodesPage nodes={nodes} onReload={loadNodes} onManage={selectNode} onOpenNode={openNodeView}/>}
+        {page==='node'      && selNodeView && <NodePage node={selNodeView} onBack={()=>{setPage('nodes');setSelNodeView(null);}} onManage={selectNode} onReload={loadNodes}/>}
         {page==='users' && !selNode && <AllUsers nodes={nodes} onSelectNode={selectNode}/>}
-        {page==='users' && selNode && <UsersPage node={selNode} onBack={()=>{setSelNode(null);setPage('users');}}/>}
+        {page==='users' && selNode  && <UsersPage node={selNode} onBack={()=>{setSelNode(null);setPage('users');}}/>}
         {page==='settings'  && <Settings/>}
       </main>
 
