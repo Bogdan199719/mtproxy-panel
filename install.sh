@@ -5,7 +5,7 @@ cd /tmp
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; WHITE='\033[1;37m'; DIM='\033[2m'; NC='\033[0m'
 
-REPO="https://github.com/YOUR_USERNAME/mtg-adminpanel.git"
+REPO="https://github.com/Bogdan199719/mtproxy-panel.git"
 INSTALL_DIR="/opt/mtg-adminpanel"
 
 p_ok()   { echo -e "${GREEN}✅ $1${NC}"; }

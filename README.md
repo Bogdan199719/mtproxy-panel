@@ -26,10 +26,8 @@
 ## Быстрая установка
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/mtg-adminpanel/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Bogdan199719/mtproxy-panel/main/install.sh)
 ```
-
-> Замени `YOUR_USERNAME` на свой GitHub username
 
 ---
 
@@ -52,7 +50,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/mtg-adminpanel
 ### 1. Клонировать
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/mtg-adminpanel.git /opt/mtg-adminpanel
+git clone https://github.com/Bogdan199719/mtproxy-panel.git /opt/mtg-adminpanel
 cd /opt/mtg-adminpanel
 ```
 
