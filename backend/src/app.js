@@ -118,6 +118,45 @@ app.get('/api/version', (req, res) => {
   res.json({ version: pkgVersion });
 });
 
+app.get('/api/health', (req, res) => {
+  const nodeCount = db.prepare('SELECT COUNT(*) as c FROM nodes').get().c;
+  const userCount = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
+  res.json({ status: 'ok', version: pkgVersion, nodes: nodeCount, users: userCount });
+});
+
+app.get('/api/docs', (req, res) => {
+  res.json({
+    version: pkgVersion,
+    auth: 'Header: x-auth-token: <your_token>',
+    base_url: '/api',
+    endpoints: [
+      { method: 'GET',    path: '/health',                              auth: false, description: 'Health check' },
+      { method: 'GET',    path: '/version',                             auth: false, description: 'Panel version' },
+      { method: 'POST',   path: '/login',                               auth: false, description: 'Get auth token. Body: {username, password}' },
+      { method: 'GET',    path: '/nodes',                               auth: true,  description: 'List all nodes' },
+      { method: 'GET',    path: '/nodes/best',                          auth: true,  description: 'Get node with fewest users (for auto-provisioning)' },
+      { method: 'POST',   path: '/nodes',                               auth: true,  description: 'Add node. Body: {name, host, ssh_user, ssh_port, ssh_key|ssh_password, base_dir, start_port}' },
+      { method: 'PUT',    path: '/nodes/:id',                           auth: true,  description: 'Update node' },
+      { method: 'DELETE', path: '/nodes/:id',                           auth: true,  description: 'Delete node and all its users' },
+      { method: 'GET',    path: '/nodes/:id/check',                     auth: true,  description: 'Check node connectivity (SSH or agent)' },
+      { method: 'GET',    path: '/nodes/:id/traffic',                   auth: true,  description: 'Get traffic stats for all users on node' },
+      { method: 'GET',    path: '/counts',                              auth: true,  description: 'User count per node_id (fast, SQLite only)' },
+      { method: 'GET',    path: '/users',                               auth: true,  description: 'Search users across all nodes. Query: name, note, node_id, limit, offset' },
+      { method: 'GET',    path: '/users/:name',                         auth: true,  description: 'Find user by exact name. Returns link: tg://proxy?...' },
+      { method: 'GET',    path: '/nodes/:id/users',                     auth: true,  description: 'List users on a node (includes real-time status from SSH/agent)' },
+      { method: 'POST',   path: '/nodes/:id/users',                     auth: true,  description: 'Create user. Body: {name, note?, expires_at?, traffic_limit_gb?}. Returns link: tg://proxy?...' },
+      { method: 'PUT',    path: '/nodes/:id/users/:name',               auth: true,  description: 'Update user. Body: {note?, expires_at?, billing_status?, max_devices?, traffic_reset_interval?}' },
+      { method: 'DELETE', path: '/nodes/:id/users/:name',               auth: true,  description: 'Delete user and stop container' },
+      { method: 'POST',   path: '/nodes/:id/users/:name/renew',         auth: true,  description: 'Renew subscription. Body: {days: 30}. Auto-resumes if suspended.' },
+      { method: 'POST',   path: '/nodes/:id/users/:name/stop',          auth: true,  description: 'Stop user container' },
+      { method: 'POST',   path: '/nodes/:id/users/:name/start',         auth: true,  description: 'Start user container' },
+      { method: 'POST',   path: '/nodes/:id/users/:name/reset-traffic', auth: true,  description: 'Reset traffic counter (restarts container)' },
+      { method: 'GET',    path: '/nodes/:id/users/:name/history',       auth: true,  description: 'Connection count history (last 48 records)' },
+      { method: 'GET',    path: '/status',                              auth: true,  description: 'Online status of all nodes' },
+    ],
+  });
+});
+
 app.post('/api/login', loginRateLimit, (req, res) => {
   const { username, password } = req.body || {};
   if (!ADMIN_USERNAME || !ADMIN_PASSWORD)
@@ -202,6 +241,90 @@ app.get('/api/counts', (req, res) => {
   const result = {};
   for (const r of rows) result[r.node_id] = r.cnt;
   res.json(result);
+});
+
+// ── Integration API ────────────────────────────────────────
+// GET /api/nodes/best — нода с наименьшим числом пользователей (для автопровизионинга)
+app.get('/api/nodes/best', (req, res) => {
+  const nodes = db.prepare('SELECT id, name, host, flag, agent_port FROM nodes').all();
+  if (!nodes.length) return res.status(404).json({ error: 'No nodes available' });
+  const counts = db.prepare('SELECT node_id, COUNT(*) as cnt FROM users GROUP BY node_id').all();
+  const countMap = Object.fromEntries(counts.map(r => [r.node_id, r.cnt]));
+  const sorted = [...nodes].sort((a, b) => (countMap[a.id] || 0) - (countMap[b.id] || 0));
+  const best = sorted[0];
+  res.json({ ...best, user_count: countMap[best.id] || 0 });
+});
+
+// GET /api/users?name=xxx — поиск пользователя по имени или заметке (все ноды)
+app.get('/api/users', (req, res) => {
+  const { name, note, node_id, limit = 50, offset = 0 } = req.query;
+  let sql = `SELECT u.*, n.name as node_name, n.host as node_host
+             FROM users u JOIN nodes n ON u.node_id = n.id WHERE 1=1`;
+  const params = [];
+  if (name)    { sql += ' AND u.name LIKE ?';    params.push(`%${name}%`); }
+  if (note)    { sql += ' AND u.note LIKE ?';    params.push(`%${note}%`); }
+  if (node_id) { sql += ' AND u.node_id = ?';    params.push(node_id); }
+  sql += ' ORDER BY u.id DESC LIMIT ? OFFSET ?';
+  params.push(parseInt(limit) || 50, parseInt(offset) || 0);
+  const rows = db.prepare(sql).all(...params);
+  res.json(rows.map(u => ({
+    ...u,
+    link: `tg://proxy?server=${u.node_host}&port=${u.port}&secret=${u.secret}`,
+    expired: u.expires_at ? new Date(u.expires_at) < new Date() : false,
+  })));
+});
+
+// GET /api/users/:name — найти пользователя по точному имени (первая совпадающая нода)
+app.get('/api/users/:name', (req, res) => {
+  const row = db.prepare(`
+    SELECT u.*, n.name as node_name, n.host as node_host
+    FROM users u JOIN nodes n ON u.node_id = n.id
+    WHERE u.name = ? LIMIT 1
+  `).get(req.params.name);
+  if (!row) return res.status(404).json({ error: 'User not found' });
+  res.json({
+    ...row,
+    link: `tg://proxy?server=${row.node_host}&port=${row.port}&secret=${row.secret}`,
+    expired: row.expires_at ? new Date(row.expires_at) < new Date() : false,
+  });
+});
+
+// POST /api/nodes/:id/users/:name/renew — продление подписки на N дней
+// Body: { days: 30 }
+app.post('/api/nodes/:id/users/:name/renew', async (req, res) => {
+  const { days } = req.body;
+  if (!days || isNaN(days) || days <= 0) return res.status(400).json({ error: 'days must be a positive number' });
+  const user = db.prepare('SELECT * FROM users WHERE node_id = ? AND name = ?').get(req.params.id, req.params.name);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  // Считаем новую дату: от текущей даты истечения (если в будущем) или от сейчас
+  const base = user.expires_at && new Date(user.expires_at) > new Date()
+    ? new Date(user.expires_at)
+    : new Date();
+  base.setDate(base.getDate() + parseInt(days));
+  const newExpiry = base.toISOString().replace('T', ' ').slice(0, 19);
+
+  const wasSuspended = user.billing_status === 'suspended';
+  db.prepare(`UPDATE users SET expires_at=?, billing_status='active' WHERE node_id=? AND name=?`)
+    .run(newExpiry, req.params.id, req.params.name);
+
+  // Если был suspended — запускаем контейнер
+  if (wasSuspended) {
+    try {
+      const node = db.prepare('SELECT * FROM nodes WHERE id=?').get(req.params.id);
+      if (node) await ssh.startRemoteUser(node, req.params.name);
+    } catch (e) { console.error(`Failed to resume ${req.params.name}:`, e.message); }
+  }
+
+  const node = db.prepare('SELECT host FROM nodes WHERE id=?').get(req.params.id);
+  res.json({
+    ok: true,
+    name: req.params.name,
+    expires_at: newExpiry,
+    days_added: parseInt(days),
+    resumed: wasSuspended,
+    link: node ? `tg://proxy?server=${node.host}&port=${user.port}&secret=${user.secret}` : undefined,
+  });
 });
 
 app.post('/api/nodes', (req, res) => {
