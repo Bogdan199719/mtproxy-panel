@@ -1,224 +1,126 @@
-# MTG AdminPanel v2.0.0
+# MTG AdminPanel
 
-Веб-панель управления MTG прокси серверами (Telegram MTPROTO proxy). Позволяет управлять несколькими нодами и клиентами через единый интерфейс.
+Веб-панель управления MTProto прокси серверами (MTG v2). Управляй неограниченным количеством нод и клиентов через единый интерфейс.
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Version](https://img.shields.io/badge/version-2.1.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)
-
----
-
-## Содержание
-
-- [Возможности](#возможности)
-- [Архитектура](#архитектура)
-- [Требования](#требования)
-- [Установка панели](#установка-панели)
-- [Установка MTG Agent на ноды](#установка-mtg-agent-на-ноды)
-- [Настройка нод в панели](#настройка-нод-в-панели)
-- [Структура проекта](#структура-проекта)
-- [API Reference](#api-reference)
-- [Переменные окружения](#переменные-окружения)
-- [Обновление](#обновление)
+![Node](https://img.shields.io/badge/node-20-brightgreen)
+![Docker](https://img.shields.io/badge/docker-required-blue)
 
 ---
 
 ## Возможности
 
-### Управление нодами
-- Добавление, редактирование и удаление нод
-- Поддержка SSH авторизации: пароль и SSH ключ
-- Отображение онлайн/офлайн статуса в реальном времени
-- Флаги стран для каждой ноды (высокое качество)
-- Страница каждой ноды с детальной статистикой
-
-### Управление клиентами
-- Создание и удаление MTG прокси контейнеров через SSH
-- Синхронизация клиентов с нодами
-- Просмотр трафика (rx/tx) в реальном времени
-- QR-коды и ссылки для подключения
-- Ручной сброс трафика (перезапуск прокси)
-
-### Лимиты и автоматизация
-- **Лимит устройств** — максимальное количество одновременных подключений. При превышении прокси автоматически останавливается
-- **Автосброс трафика** — сброс счётчиков трафика: ежедневно / ежемесячно / ежегодно
-- **Накопленный трафик** — суммарный трафик за всё время хранится в базе данных
-- **Автоудаление** — клиенты с истёкшим сроком удаляются автоматически
-- **История подключений** — записывается каждые 5 минут, хранится 24 часа
-
-### MTG Agent
-- Лёгкий HTTP агент на каждой ноде (Python FastAPI)
-- Читает метрики MTG контейнеров через Docker SDK
-- Подсчёт уникальных IP-адресов (≈ устройств) через `/proc/{pid}/net/tcp6`
-- Трафик через docker stats API
-- Работает в Docker с `pid: host` и `network_mode: host`
-- Установка и обновление через панель одной кнопкой
-
-### Дашборд
-- Сводная статистика: ноды (онлайн/офлайн), клиенты (активных/остановлен/онлайн)
-- Карточки нод с пиллами: всего / активных / онлайн / остановлен
-- Быстрый переход к клиентам и странице ноды
+- **Мультинодовое управление** — добавляй ноды по SSH, панель сама устанавливает всё необходимое
+- **Авто-оптимизация нод** — BBR TCP, UFW фаервол, Docker log limits, ulimits — всё при подготовке сервера
+- **Клиенты** — создание/удаление MTG прокси контейнеров, QR-коды, ссылки `tg://proxy`
+- **Биллинг** — дата истечения, автоостановка при просрочке, автозапуск при продлении
+- **Лимит устройств** — автостоп при превышении одновременных подключений
+- **Автосброс трафика** — ежедневно / ежемесячно / ежегодно
+- **MTG Agent** — Python FastAPI агент на каждой ноде, реальные метрики без SSH
+- **2FA (TOTP)** — двухфакторная аутентификация (Google Authenticator и др.)
+- **Безопасность** — rate limiting, security headers, валидация входных данных, JSX компилируется при сборке
 
 ---
 
-## Архитектура
+## Быстрая установка
 
-```
-┌─────────────────────────────┐
-│   MTG AdminPanel (панель)   │
-│   Node.js + Express + React  │
-│   SQLite база данных         │
-│   Порт: 3000                 │
-└──────────┬──────────────────┘
-           │
-    ┌──────┴───────┐
-    │  SSH / Agent  │
-    └──────┬────────┘
-           │
-    ┌──────┴────────────────────────────────┐
-    │              Ноды                      │
-    │                                        │
-    │  ┌─────────────┐  ┌─────────────────┐ │
-    │  │  MTG Agent  │  │  MTG Containers │ │
-    │  │  Port: 8081 │  │  mtg-admin      │ │
-    │  │  FastAPI    │◄─│  mtg-liza       │ │
-    │  │  pid: host  │  │  mtg-sam        │ │
-    │  └─────────────┘  └─────────────────┘ │
-    └───────────────────────────────────────┘
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/mtg-adminpanel/main/install.sh)
 ```
 
-### Логика получения метрик
-
-1. **С агентом** (рекомендуется): Панель делает HTTP запрос к агенту → агент читает `/proc/{pid}/net/tcp6` контейнера → возвращает уникальные IP к порту 3128
-2. **Без агента** (SSH fallback): Панель подключается по SSH → выполняет команды в shell → медленнее, не показывает онлайн-устройства
+> Замени `YOUR_USERNAME` на свой GitHub username
 
 ---
 
 ## Требования
 
-### Панель
-- Docker и Docker Compose
-- Доступ к нодам по SSH (пароль или ключ)
-- Порт для панели (по умолчанию 3000)
+**Панель:**
+- Ubuntu 20.04+ / Debian 11+
+- Docker + Docker Compose
+- Порт 3000 (или любой другой)
 
-### Ноды
-- Docker и Docker Compose
-- SSH доступ с панели
-- MTG контейнеры запущены через Docker Compose в `/opt/mtg/users/{name}/`
-- Открытый порт 8081 для MTG Agent (опционально)
+**Ноды (устанавливается автоматически через панель):**
+- Ubuntu 20.04+ / Debian 11+
+- SSH доступ (пароль или ключ)
+- Минимум 1 vCPU, 512 MB RAM
 
 ---
 
-## Установка панели
+## Установка вручную
 
-### 1. Клонировать репозиторий
+### 1. Клонировать
 
 ```bash
-git clone https://github.com/MaksimTMB/mtg-adminpanel.git /opt/mtg-adminpanel
+git clone https://github.com/YOUR_USERNAME/mtg-adminpanel.git /opt/mtg-adminpanel
 cd /opt/mtg-adminpanel
 ```
 
-### 2. Настроить переменные окружения
+### 2. Создать конфигурацию
 
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-```env
-AUTH_TOKEN=your_secret_token_here
-AGENT_TOKEN=mtg-agent-secret
-AGENT_PORT=8081
-```
-
-### 3. Запустить через Docker Compose
+### 3. Запустить
 
 ```bash
 docker compose up -d
 ```
 
-Панель доступна на `http://your-server:3000`
-
-### 4. Настроить обратный прокси (опционально)
-
-Пример для Nginx Proxy Manager — добавь прокси хост:
-- Domain: `panel.yourdomain.com`
-- Forward: `http://localhost:3000`
-
----
-
-## Установка MTG Agent на ноды
-
-### Способ 1: Через панель (рекомендуется)
-
-1. Открой панель → Ноды → ✏️ нужной ноды
-2. В секции **MTG Agent** нажми **Установить** — скопируй команду
-3. Выполни команду на ноде через SSH
-4. В поле **Порт агента** введи `8081`
-5. Нажми **Проверить** — убедись что агент доступен
-6. Сохрани ноду
-
-### Способ 2: Вручную через SSH
+### 4. Nginx + SSL (опционально)
 
 ```bash
-ssh root@your-node.com
-mkdir -p /opt/mtg-agent && cd /opt/mtg-agent
-wget -q https://raw.githubusercontent.com/MaksimTMB/mtg-adminpanel/main/mtg-agent/install-agent.sh -O install.sh
-bash install.sh mtg-agent-secret
+apt install -y nginx certbot python3-certbot-nginx
+certbot --nginx -d panel.example.com
 ```
 
-### Обновление агента
+Конфиг `/etc/nginx/sites-available/panel`:
 
-Через панель: ✏️ ноды → кнопка **Обновить** в секции MTG Agent.
-
-Вручную:
-```bash
-cd /opt/mtg-agent
-wget -q https://raw.githubusercontent.com/MaksimTMB/mtg-adminpanel/main/mtg-agent/main.py -O main.py
-docker compose down && docker compose up -d
+```nginx
+server {
+    listen 80;
+    server_name panel.example.com;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name panel.example.com;
+    ssl_certificate /etc/letsencrypt/live/panel.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/panel.example.com/privkey.pem;
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
 ```
 
 ---
 
-## Настройка нод в панели
+## Добавление ноды
 
-### Структура MTG на ноде
+1. Панель → **Ноды** → **Добавить ноду**
+2. Введи IP, SSH логин/пароль (или ключ)
+3. Нажми **Добавить и подготовить сервер**
 
-Панель ожидает следующую структуру:
+Панель автоматически установит Docker, MTG Agent, настроит BBR TCP, UFW, системные лимиты и определит характеристики сервера (CPU/RAM).
 
-```
-/opt/mtg/users/
-├── admin/
-│   ├── config.toml          # secret, bind-to
-│   └── docker-compose.yml   # образ, порт
-├── liza/
-│   ├── config.toml
-│   └── docker-compose.yml
-└── ...
-```
+---
 
-### Параметры ноды
+## Переменные окружения
 
-| Параметр | Описание | Пример |
-|----------|----------|--------|
-| Название | Отображаемое имя | `Helsinki` |
-| Host / IP | Адрес сервера | `hel.maks68.com` |
-| SSH User | Пользователь SSH | `root` |
-| SSH Port | Порт SSH | `22` |
-| Base Dir | Директория с клиентами | `/opt/mtg/users` |
-| Start Port | Начальный порт для новых клиентов | `4433` |
-| Флаг | Код страны (ISO 3166-1 alpha-2) | `fi` |
-| Порт агента | Порт MTG Agent | `8081` |
-
-### Настройки клиента
-
-| Параметр | Описание |
-|----------|----------|
-| Заметка | Произвольный текст (имя клиента, дата оплаты) |
-| Истекает | Дата истечения — клиент удаляется автоматически |
-| Лимит трафика (ГБ) | Максимальный трафик (не реализует автостоп, только отображение) |
-| Макс. устройств | Лимит одновременных IP. При превышении — автостоп |
-| Автосброс трафика | Интервал сброса: день / месяц / год |
+| Переменная | Описание | Обязательно |
+|-----------|----------|-------------|
+| `ADMIN_USERNAME` | Логин для входа в панель | ✅ |
+| `ADMIN_PASSWORD` | Пароль для входа в панель | ✅ |
+| `AUTH_TOKEN` | Внутренний токен сессии | ✅ |
+| `AGENT_TOKEN` | Токен MTG Agent (должен совпадать на нодах) | ✅ |
+| `PORT` | Порт панели | По умолчанию `3000` |
+| `PANEL_URL` | URL панели (для CORS) | По умолчанию `http://localhost:3000` |
+| `DATA_DIR` | Путь к базе данных | По умолчанию `/data` |
 
 ---
 
@@ -227,162 +129,91 @@ docker compose down && docker compose up -d
 ```
 mtg-adminpanel/
 ├── backend/
-│   ├── src/
-│   │   ├── app.js          # Express сервер, API эндпоинты, фоновые задачи
-│   │   ├── db.js           # SQLite база данных, схема таблиц
-│   │   └── ssh.js          # SSH подключения, логика агента
-│   └── package.json
+│   └── src/
+│       ├── app.js          # Express API, фоновые задачи
+│       ├── db.js           # SQLite схема и миграции
+│       ├── ssh.js          # SSH + MTG Agent клиент
+│       └── totp.js         # TOTP 2FA
 ├── public/
-│   └── index.html          # React SPA (Babel standalone)
+│   └── index.html          # React SPA
 ├── mtg-agent/
 │   ├── main.py             # FastAPI агент
-│   ├── docker-compose.yml  # Docker конфиг агента
-│   └── install-agent.sh    # Скрипт установки
-├── docker-compose.yml      # Docker конфиг панели
+│   ├── docker-compose.yml
+│   └── install-agent.sh
+├── build-jsx.js            # Компиляция JSX при Docker build
+├── docker-compose.yml
 ├── Dockerfile
-└── .env.example
+├── install.sh
+├── .env.example
+└── README.md
 ```
 
 ---
 
-## API Reference
+## API
 
-### Аутентификация
+### Авторизация
 
-Все запросы (кроме `/api/version`) требуют заголовок:
 ```
-x-auth-token: YOUR_AUTH_TOKEN
+POST /api/login   { "username": "...", "password": "..." }
+→ { "token": "..." }
 ```
+
+Все остальные запросы: заголовок `x-auth-token: TOKEN`
 
 ### Ноды
 
 | Метод | URL | Описание |
 |-------|-----|----------|
 | GET | `/api/nodes` | Список нод |
-| POST | `/api/nodes` | Создать ноду |
-| PUT | `/api/nodes/:id` | Обновить ноду |
-| DELETE | `/api/nodes/:id` | Удалить ноду |
-| GET | `/api/nodes/:id/check` | Проверить SSH/Agent доступность |
-| GET | `/api/nodes/:id/check-agent` | Проверить MTG Agent |
-| POST | `/api/nodes/:id/update-agent` | Установить/обновить агент через SSH |
-| GET | `/api/status` | Статус всех нод (online_users, containers) |
+| POST | `/api/nodes` | Создать |
+| PUT | `/api/nodes/:id` | Обновить |
+| DELETE | `/api/nodes/:id` | Удалить |
+| POST | `/api/nodes/:id/setup-node` | Подготовить сервер |
+| GET | `/api/nodes/:id/check` | Проверить SSH/Agent |
+| GET | `/api/status` | Статус всех нод |
+| GET | `/api/counts` | Количество клиентов (SQLite) |
 
 ### Клиенты
 
 | Метод | URL | Описание |
 |-------|-----|----------|
-| GET | `/api/nodes/:id/users` | Список клиентов ноды с метриками |
-| POST | `/api/nodes/:id/users` | Создать клиента |
-| PUT | `/api/nodes/:id/users/:name` | Обновить настройки клиента |
-| DELETE | `/api/nodes/:id/users/:name` | Удалить клиента |
-| POST | `/api/nodes/:id/users/:name/stop` | Остановить прокси |
-| POST | `/api/nodes/:id/users/:name/start` | Запустить прокси |
+| GET | `/api/nodes/:id/users` | Список с метриками |
+| POST | `/api/nodes/:id/users` | Создать |
+| PUT | `/api/nodes/:id/users/:name` | Обновить |
+| DELETE | `/api/nodes/:id/users/:name` | Удалить |
+| POST | `/api/nodes/:id/users/:name/stop` | Остановить |
+| POST | `/api/nodes/:id/users/:name/start` | Запустить |
 | POST | `/api/nodes/:id/users/:name/reset-traffic` | Сбросить трафик |
-| GET | `/api/nodes/:id/users/:name/history` | История подключений |
-| GET | `/api/nodes/:id/traffic` | Трафик всех клиентов ноды |
-| POST | `/api/nodes/:id/sync` | Синхронизировать клиентов с нодой |
-
-### MTG Agent API
-
-| Метод | URL | Заголовок | Описание |
-|-------|-----|-----------|----------|
-| GET | `/health` | — | Проверка доступности |
-| GET | `/metrics` | `x-agent-token: TOKEN` | Метрики контейнеров |
-
-Пример ответа `/metrics`:
-```json
-{
-  "containers": [
-    {
-      "name": "mtg-admin",
-      "running": true,
-      "status": "running",
-      "connections": 2,
-      "devices": 2,
-      "is_online": true,
-      "traffic": {
-        "rx": "54.17MB",
-        "tx": "56.24MB",
-        "rx_bytes": 56797474,
-        "tx_bytes": 58972294
-      }
-    }
-  ],
-  "total": 1
-}
-```
-
----
-
-## Переменные окружения
-
-### Панель (`.env`)
-
-| Переменная | Описание | По умолчанию |
-|-----------|----------|-------------|
-| `AUTH_TOKEN` | Токен авторизации в панель | — (обязательно) |
-| `AGENT_TOKEN` | Токен для MTG Agent | `mtg-agent-secret` |
-| `AGENT_PORT` | Порт агента | `8081` |
-| `PORT` | Порт панели | `3000` |
-
-### Агент (`.env` в `/opt/mtg-agent/`)
-
-| Переменная | Описание | По умолчанию |
-|-----------|----------|-------------|
-| `AGENT_TOKEN` | Токен авторизации | `mtg-agent-secret` |
 
 ---
 
 ## Обновление
 
-### Панель
-
 ```bash
 cd /opt/mtg-adminpanel
-git pull origin main
-docker cp backend/src/app.js mtg-panel:/app/src/app.js
-docker cp backend/src/ssh.js mtg-panel:/app/src/ssh.js
-docker cp public/index.html mtg-panel:/app/public/index.html
-docker restart mtg-panel
+git pull
+docker compose down && docker compose up -d --build
 ```
-
-Или полный перезапуск:
-```bash
-docker compose down && docker compose up -d
-```
-
-### Агент на нодах
-
-Через панель: ✏️ ноды → **Обновить** в секции MTG Agent.
 
 ---
 
 ## Changelog
 
-### v2.0.0 (2026-03-15)
+### v2.1.0
+- Авто-оптимизация ноды при подготовке (BBR, UFW, ulimits, Docker log limits, CPU/RAM detection)
+- JSX компилируется при Docker build (убран babel-standalone из браузера)
+- Новый endpoint `/api/counts` — подсчёт без SSH
+- Rate limiting на TOTP
+- Исправлена бесконечная загрузка страницы клиентов (`!_userCount` bug)
+- Исправлена временная зона при редактировании дат
+- Security headers, маскировка токена в логах, валидация имён
 
-**Новое:**
-- MTG Agent — HTTP агент на каждой ноде для точных метрик в реальном времени
-- Лимит устройств на клиента с автоматическим стопом при превышении
-- Автосброс трафика (ежедневно / ежемесячно / ежегодно)
-- Накопленный трафик за всё время в базе данных
-- Страница каждой ноды с детальной статистикой
-- Флаги стран высокого разрешения (flagcdn.com w80)
-- Флаг в заголовке страницы клиентов
-- Онлайн-пиллы на дашборде и карточках нод
-- Кнопка установки/обновления агента в настройках ноды
-
-**Исправлено:**
-- Подсчёт подключений через `/proc/{pid}/net/tcp6` — точные данные для bridge network
-- IPv4 форсирование для HTTP запросов к агенту
-- Убраны IIFE в JSX (несовместимы с Babel standalone)
-- Дублирующий `</main>` тег
-- Оператор `??` заменён на тернарный (Babel standalone 7.23)
-- `process.env` в браузерном коде
-
-**v1.x → v2.0 breaking changes:**
-- `agent_port` добавлен в таблицу `nodes` (миграция автоматическая)
-- `max_devices`, `traffic_reset_interval`, `next_reset_at`, `total_traffic_rx_bytes`, `total_traffic_tx_bytes` добавлены в таблицу `users`
+### v2.0.0
+- MTG Agent, лимит устройств, автосброс трафика
+- Авторизация логин/пароль, 2FA TOTP
+- Авто-установка нод через SSH
+- Биллинг: дата истечения, автостоп/автозапуск
 
 ---
 

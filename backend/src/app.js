@@ -7,8 +7,11 @@ const ssh     = require('./ssh');
 const authenticator = require('./totp');
 
 // ── Config ────────────────────────────────────────────────
-const AUTH_TOKEN = process.env.AUTH_TOKEN || 'changeme';
-const PORT       = process.env.PORT || 3000;
+const AUTH_TOKEN     = process.env.AUTH_TOKEN || 'changeme';
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || '';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const PORT           = process.env.PORT || 3000;
+const crypto         = require('crypto');
 
 // Version: /app/src/app.js → ../package.json = /app/package.json = backend/package.json in Docker
 let pkgVersion = 'unknown';
@@ -34,6 +37,9 @@ function runMigrations() {
     "ALTER TABLE users ADD COLUMN next_reset_at DATETIME DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN total_traffic_rx_bytes INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN total_traffic_tx_bytes INTEGER DEFAULT 0",
+    // v1.8.0 — node hardware info
+    "ALTER TABLE nodes ADD COLUMN cpu_cores INTEGER DEFAULT NULL",
+    "ALTER TABLE nodes ADD COLUMN ram_mb INTEGER DEFAULT NULL",
   ];
   for (const sql of migrations) {
     try { db.prepare(sql).run(); } catch (_) {}
@@ -41,10 +47,70 @@ function runMigrations() {
 }
 runMigrations();
 
+// ── Security helpers ──────────────────────────────────────
+// Simple in-memory rate limiter for login endpoint
+const loginAttempts = new Map();
+function loginRateLimit(req, res, next) {
+  const ip = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000; // 15 min
+  const maxAttempts = 10;
+  const attempts = (loginAttempts.get(ip) || []).filter(t => now - t < windowMs);
+  if (attempts.length >= maxAttempts) {
+    return res.status(429).json({ error: 'Слишком много попыток. Попробуйте через 15 минут.' });
+  }
+  attempts.push(now);
+  loginAttempts.set(ip, attempts);
+  next();
+}
+// Cleanup stale rate limit entries every 30 min
+setInterval(() => {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  for (const [ip, times] of loginAttempts.entries()) {
+    const fresh = times.filter(t => t > cutoff);
+    if (fresh.length === 0) loginAttempts.delete(ip);
+    else loginAttempts.set(ip, fresh);
+  }
+}, 30 * 60 * 1000);
+
+// Rate limiter для TOTP (10 попыток за 5 минут)
+const totpAttempts = new Map();
+function totpRateLimit(req, res, next) {
+  const ip = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  const windowMs = 5 * 60 * 1000;
+  const maxAttempts = 10;
+  const attempts = (totpAttempts.get(ip) || []).filter(t => now - t < windowMs);
+  if (attempts.length >= maxAttempts) {
+    return res.status(429).json({ error: 'Слишком много попыток. Попробуйте через 5 минут.' });
+  }
+  attempts.push(now);
+  totpAttempts.set(ip, attempts);
+  next();
+}
+setInterval(() => {
+  const cutoff = Date.now() - 5 * 60 * 1000;
+  for (const [ip, times] of totpAttempts.entries()) {
+    const fresh = times.filter(t => t > cutoff);
+    if (fresh.length === 0) totpAttempts.delete(ip);
+    else totpAttempts.set(ip, fresh);
+  }
+}, 10 * 60 * 1000);
+
 // ── App ───────────────────────────────────────────────────
+const PANEL_ORIGIN = process.env.PANEL_URL || 'https://fn.viplinilo.ru';
+
 const app = express();
-app.use(cors());
-app.use(express.json());
+// Security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
+app.use(cors({ origin: PANEL_ORIGIN, credentials: true }));
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '../public')));
 
 // ── Public endpoints (no auth) ────────────────────────────
@@ -52,9 +118,27 @@ app.get('/api/version', (req, res) => {
   res.json({ version: pkgVersion });
 });
 
+app.post('/api/login', loginRateLimit, (req, res) => {
+  const { username, password } = req.body || {};
+  if (!ADMIN_USERNAME || !ADMIN_PASSWORD)
+    return res.status(500).json({ error: 'Credentials not configured' });
+  if (!username || !password)
+    return res.status(401).json({ error: 'Неверный логин или пароль' });
+  const userMatch = username === ADMIN_USERNAME;
+  const passMatch = crypto.timingSafeEqual(
+    Buffer.from(password || ''),
+    Buffer.from(ADMIN_PASSWORD)
+  );
+  if (userMatch && passMatch) {
+    res.json({ token: AUTH_TOKEN });
+  } else {
+    res.status(401).json({ error: 'Неверный логин или пароль' });
+  }
+});
+
 // ── Auth middleware ───────────────────────────────────────
 app.use('/api', (req, res, next) => {
-  const token = req.headers['x-auth-token'] || req.query.token;
+  const token = req.headers['x-auth-token'];
   if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
   next();
 });
@@ -84,7 +168,7 @@ app.post('/api/totp/setup', async (req, res) => {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('totp_enabled', '0')").run();
   res.json({ secret, qr: authenticator.keyuri('admin', TOTP_ISSUER, secret) });
 });
-app.post('/api/totp/verify', (req, res) => {
+app.post('/api/totp/verify', totpRateLimit, (req, res) => {
   const token = req.headers['x-auth-token'];
   if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
   const { code } = req.body;
@@ -95,7 +179,7 @@ app.post('/api/totp/verify', (req, res) => {
     res.json({ ok: true });
   } else { res.status(400).json({ error: 'Invalid code' }); }
 });
-app.post('/api/totp/disable', (req, res) => {
+app.post('/api/totp/disable', totpRateLimit, (req, res) => {
   const token = req.headers['x-auth-token'];
   if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
   const { code } = req.body;
@@ -109,7 +193,15 @@ app.post('/api/totp/disable', (req, res) => {
 
 // ── Nodes ─────────────────────────────────────────────────
 app.get('/api/nodes', (req, res) => {
-  res.json(db.prepare('SELECT id, name, host, ssh_user, ssh_port, base_dir, start_port, created_at, flag, agent_port FROM nodes').all());
+  res.json(db.prepare('SELECT id, name, host, ssh_user, ssh_port, base_dir, start_port, created_at, flag, agent_port, cpu_cores, ram_mb FROM nodes').all());
+});
+
+// Быстрый подсчёт клиентов по нодам (только SQLite, без SSH)
+app.get('/api/counts', (req, res) => {
+  const rows = db.prepare('SELECT node_id, COUNT(*) as cnt FROM users GROUP BY node_id').all();
+  const result = {};
+  for (const r of rows) result[r.node_id] = r.cnt;
+  res.json(result);
 });
 
 app.post('/api/nodes', (req, res) => {
@@ -139,7 +231,15 @@ app.put('/api/nodes/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/nodes/:id', (req, res) => {
+app.delete('/api/nodes/:id', async (req, res) => {
+  const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(req.params.id);
+  if (!node) return res.status(404).json({ error: 'Not found' });
+  // Stop and remove all users on this node via SSH before deleting
+  const users = db.prepare('SELECT name FROM users WHERE node_id = ?').all(req.params.id);
+  for (const u of users) {
+    try { await ssh.removeRemoteUser(node, u.name); } catch (_) {}
+  }
+  db.prepare('DELETE FROM users WHERE node_id = ?').run(req.params.id);
   db.prepare('DELETE FROM nodes WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
@@ -154,6 +254,110 @@ app.get('/api/nodes/:id/check-agent', async (req, res) => {
     res.json({ available: ok });
   } catch (e) {
     res.json({ available: false, reason: e.message });
+  }
+});
+
+// Full setup: install Docker + xxd + MTG Agent on a fresh Ubuntu server
+app.post('/api/nodes/:id/setup-node', async (req, res) => {
+  const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(req.params.id);
+  if (!node) return res.status(404).json({ error: 'Not found' });
+  const agentToken = process.env.AGENT_TOKEN || 'mtg-agent-secret';
+  const agentPort  = node.agent_port || 8081;
+  const baseDir    = node.base_dir || '/opt/mtg/users';
+  const sshPort    = node.ssh_port || 22;
+  const cmd = [
+    'export DEBIAN_FRONTEND=noninteractive',
+    // ── Package installation ────────────────────────────────
+    'apt-get update -qq',
+    'apt-get install -y -qq docker.io docker-compose-v2 xxd curl wget ufw',
+    'systemctl start docker',
+    'systemctl enable docker',
+    // ── Detect hardware ─────────────────────────────────────
+    'CPU_CORES=$(nproc)',
+    'RAM_MB=$(free -m | awk \'/Mem:/{print $2}\')',
+    'echo "=== HW: CPU=${CPU_CORES} RAM=${RAM_MB}MB ==="',
+    // ── TCP/Network optimizations (BBR + tuning) ────────────
+    'modprobe tcp_bbr 2>/dev/null || true',
+    'sysctl -w net.core.default_qdisc=fq 2>/dev/null || true',
+    'sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null || true',
+    `cat > /etc/sysctl.d/99-mtg.conf << 'SYSCTL'
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.ipv4.tcp_rmem=4096 87380 16777216
+net.ipv4.tcp_wmem=4096 65536 16777216
+net.core.somaxconn=65535
+net.ipv4.tcp_max_syn_backlog=65535
+net.ipv4.ip_local_port_range=1024 65535
+fs.file-max=1048576
+SYSCTL`,
+    'sysctl -p /etc/sysctl.d/99-mtg.conf 2>/dev/null || true',
+    // ── Docker log limits ───────────────────────────────────
+    `mkdir -p /etc/docker && cat > /etc/docker/daemon.json << 'DOCKER'
+{"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"}}
+DOCKER`,
+    'systemctl restart docker',
+    // ── UFW firewall ────────────────────────────────────────
+    'ufw --force reset',
+    'ufw default deny incoming',
+    'ufw default allow outgoing',
+    `ufw allow ${sshPort}/tcp comment 'SSH'`,
+    `ufw allow ${agentPort}/tcp comment 'MTG Agent'`,
+    'ufw --force enable',
+    // ── Ulimits for high-connection workloads ───────────────
+    `grep -q '* soft nofile' /etc/security/limits.conf || echo '* soft nofile 1048576
+* hard nofile 1048576' >> /etc/security/limits.conf`,
+    // ── User dir + MTG Agent setup ──────────────────────────
+    `mkdir -p ${baseDir}`,
+    `mkdir -p /opt/mtg-agent && cd /opt/mtg-agent`,
+    `wget -q https://raw.githubusercontent.com/MaksimTMB/mtg-adminpanel/main/mtg-agent/install-agent.sh -O install.sh`,
+    `bash install.sh ${agentToken}`,
+    'echo "==SETUP_DONE=="'
+  ].join(' && ');
+  try {
+    const r = await ssh.sshExec(node, cmd, 180000);
+    const installed = r.output.includes('==SETUP_DONE==');
+    if (!installed) {
+      return res.json({ ok: false, output: r.output.slice(-1500), error: 'Установка не завершилась' });
+    }
+    // Parse hardware info from output
+    const hwMatch = r.output.match(/=== HW: CPU=(\d+) RAM=(\d+)MB ===/);
+    const cpuCores = hwMatch ? parseInt(hwMatch[1]) : null;
+    const ramMb    = hwMatch ? parseInt(hwMatch[2]) : null;
+
+    db.prepare('UPDATE nodes SET agent_port=? WHERE id=?').run(agentPort, node.id);
+    if (cpuCores || ramMb) {
+      try {
+        db.prepare('ALTER TABLE nodes ADD COLUMN cpu_cores INTEGER DEFAULT NULL').run();
+      } catch (_) {}
+      try {
+        db.prepare('ALTER TABLE nodes ADD COLUMN ram_mb INTEGER DEFAULT NULL').run();
+      } catch (_) {}
+      db.prepare('UPDATE nodes SET cpu_cores=?, ram_mb=? WHERE id=?').run(cpuCores, ramMb, node.id);
+    }
+
+    // Ждём пока агент поднимется (pip install занимает ~30-40 сек)
+    const updatedNode = { ...node, agent_port: agentPort };
+    let agentReady = false;
+    for (let i = 0; i < 15; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      try {
+        agentReady = await ssh.checkAgentHealth(updatedNode);
+        if (agentReady) break;
+      } catch (_) {}
+    }
+
+    const hwInfo = cpuCores ? `\n💻 CPU: ${cpuCores} ядер, RAM: ${ramMb} MB` : '';
+    res.json({
+      ok: agentReady,
+      agent_ready: agentReady,
+      cpu_cores: cpuCores,
+      ram_mb: ramMb,
+      output: r.output.slice(-2000) + hwInfo + (agentReady ? '\n\n✅ Агент запущен и отвечает!' : '\n\n⚠️ Установка прошла, но агент ещё не ответил. Подожди 30 сек и нажми «Проверить».'),
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
@@ -218,15 +422,17 @@ app.get('/api/status', async (req, res) => {
   const nodes = db.prepare('SELECT * FROM nodes').all();
   const results = await Promise.allSettled(
     nodes.map(async node => {
-      const status = await ssh.getNodeStatus(node);
-      // online_users only via agent (fast) — skip SSH nodes to avoid slowdown
-      let online_users = 0;
+      // Single agent request, reused for both status and online_users
+      let agentContainers = null;
       if (node.agent_port) {
-        try {
-          const remoteUsers = await ssh.getRemoteUsers(node);
-          online_users = remoteUsers.filter(u => (u.connections || 0) > 0).length;
-        } catch (_) {}
+        try { agentContainers = await ssh.getAgentMetrics(node); } catch (_) {}
       }
+      const status = agentContainers !== null
+        ? { online: true, containers: agentContainers.filter(c => c.running).length, via_agent: true }
+        : await ssh.getNodeStatusNoAgent(node);
+      const online_users = agentContainers
+        ? agentContainers.filter(c => (c.connections || 0) > 0).length
+        : 0;
       return { id: node.id, name: node.name, host: node.host, ...status, online_users };
     })
   );
@@ -259,7 +465,7 @@ app.get('/api/nodes/:id/users', async (req, res) => {
       const dbUser = dbUsers.find(u => u.name === remote.name);
       if (dbUser && dbUser.max_devices && (remote.connections || 0) > dbUser.max_devices) {
         console.log(`⚠️ Device limit exceeded: ${remote.name} (${remote.connections}/${dbUser.max_devices}) — stopping`);
-        ssh.stopRemoteUser(node, remote.name).catch(() => {});
+        ssh.stopRemoteUser(node, remote.name).catch(e => console.error(`Device limit stop failed for ${remote.name}:`, e.message));
         db.prepare('UPDATE users SET status=? WHERE node_id=? AND name=?').run('stopped', req.params.id, remote.name);
         remote.status = 'stopped';
         remote.connections = 0;
@@ -294,11 +500,14 @@ app.post('/api/nodes/:id/sync', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+const normalizeDate = (d) => d ? d.replace('T', ' ') : null;
+
 app.post('/api/nodes/:id/users', async (req, res) => {
   const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(req.params.id);
   if (!node) return res.status(404).json({ error: 'Node not found' });
   const { name, note, expires_at, traffic_limit_gb } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
+  try { ssh.sanitizeName(name); } catch (e) { return res.status(400).json({ error: e.message }); }
   if (db.prepare('SELECT id FROM users WHERE node_id = ? AND name = ?').get(req.params.id, name)) {
     return res.status(400).json({ error: 'User already exists' });
   }
@@ -306,14 +515,14 @@ app.post('/api/nodes/:id/users', async (req, res) => {
     const { port, secret } = await ssh.createRemoteUser(node, name);
     const result = db.prepare(
       'INSERT INTO users (node_id, name, port, secret, note, expires_at, traffic_limit_gb) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(req.params.id, name, port, secret, note||'', expires_at||null, traffic_limit_gb||null);
+    ).run(req.params.id, name, port, secret, note||'', normalizeDate(expires_at), traffic_limit_gb||null);
     res.json({ id: result.lastInsertRowid, name, port, secret, note: note||'',
       expires_at: expires_at||null, traffic_limit_gb: traffic_limit_gb||null,
       link: `tg://proxy?server=${node.host}&port=${port}&secret=${secret}` });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/nodes/:id/users/:name', (req, res) => {
+app.put('/api/nodes/:id/users/:name', async (req, res) => {
   const { note, expires_at, traffic_limit_gb, billing_price, billing_currency, billing_period,
     billing_paid_until, billing_status, max_devices, traffic_reset_interval } = req.body;
   const user = db.prepare('SELECT * FROM users WHERE node_id = ? AND name = ?').get(req.params.id, req.params.name);
@@ -326,24 +535,40 @@ app.put('/api/nodes/:id/users/:name', (req, res) => {
     next_reset_at = calcNextReset(traffic_reset_interval);
   }
 
+  const newExpiry = expires_at !== undefined ? normalizeDate(expires_at) : user.expires_at;
+  const wasExpiredOrSuspended = user.billing_status === 'suspended';
+  const newExpiryIsValid = newExpiry && new Date(newExpiry) > new Date();
+
   db.prepare(`UPDATE users SET
     note=?, expires_at=?, traffic_limit_gb=?,
     billing_price=?, billing_currency=?, billing_period=?, billing_paid_until=?, billing_status=?,
     max_devices=?, traffic_reset_interval=?, next_reset_at=?
     WHERE node_id=? AND name=?`).run(
     note!==undefined ? note : user.note,
-    expires_at!==undefined ? expires_at : user.expires_at,
+    newExpiry,
     traffic_limit_gb!==undefined ? traffic_limit_gb : user.traffic_limit_gb,
     billing_price!==undefined ? billing_price : user.billing_price,
     billing_currency||user.billing_currency||'RUB',
     billing_period||user.billing_period||'monthly',
     billing_paid_until!==undefined ? billing_paid_until : user.billing_paid_until,
-    billing_status||user.billing_status||'active',
+    wasExpiredOrSuspended && newExpiryIsValid ? 'active' : (billing_status||user.billing_status||'active'),
     max_devices!==undefined ? max_devices : user.max_devices,
     newInterval||null,
     next_reset_at||null,
     req.params.id, req.params.name
   );
+
+  // Если пользователь был suspended и новая дата в будущем — запускаем контейнер
+  if (wasExpiredOrSuspended && newExpiryIsValid) {
+    try {
+      const node = db.prepare('SELECT * FROM nodes WHERE id=?').get(req.params.id);
+      if (node) {
+        await ssh.startRemoteUser(node, req.params.name);
+        console.log(`▶️ Resumed user: ${req.params.name} on node ${req.params.id}`);
+      }
+    } catch (e) { console.error(`Failed to resume user ${req.params.name}:`, e.message); }
+  }
+
   res.json({ ok: true });
 });
 
@@ -437,12 +662,20 @@ function parseBytes(str) {
 }
 
 // ── Background jobs ───────────────────────────────────────
+let _recordHistoryRunning = false;
 async function recordHistory() {
+  if (_recordHistoryRunning) return;
+  _recordHistoryRunning = true;
+  try {
   const nodes = db.prepare('SELECT * FROM nodes').all();
   for (const node of nodes) {
     try {
       const remoteUsers = await ssh.getRemoteUsers(node);
       const traffic = await ssh.getTraffic(node).catch(() => ({}));
+
+      // Загружаем всех пользователей ноды одним запросом (вместо N запросов в цикле)
+      const allDbUsers = db.prepare('SELECT * FROM users WHERE node_id=?').all(node.id);
+      const dbUsersMap = Object.fromEntries(allDbUsers.map(u => [u.name, u]));
 
       for (const u of remoteUsers) {
         const conns = u.connections || 0;
@@ -455,7 +688,7 @@ async function recordHistory() {
         }
 
         // Device limit enforcement
-        const dbUser = db.prepare('SELECT * FROM users WHERE node_id=? AND name=?').get(node.id, u.name);
+        const dbUser = dbUsersMap[u.name];
         if (dbUser && dbUser.max_devices && conns > dbUser.max_devices) {
           console.log(`⚠️ Device limit exceeded: ${u.name} on node ${node.id} (${conns}/${dbUser.max_devices})`);
           try {
@@ -496,28 +729,31 @@ async function recordHistory() {
     } catch (_) {}
   }
   db.prepare("DELETE FROM connections_history WHERE recorded_at < datetime('now', '-24 hours')").run();
+  } finally { _recordHistoryRunning = false; }
 }
 
-async function cleanExpiredUsers() {
+async function checkExpiredUsers() {
+  // Останавливаем истёкших (если ещё работают)
   const expired = db.prepare(
-    "SELECT u.*, n.* FROM users u JOIN nodes n ON u.node_id=n.id WHERE u.expires_at IS NOT NULL AND u.expires_at < datetime('now')"
+    "SELECT u.*, u.id as uid FROM users u WHERE u.expires_at IS NOT NULL AND datetime(u.expires_at) < datetime('now') AND (u.billing_status IS NULL OR u.billing_status != 'suspended')"
   ).all();
   for (const u of expired) {
     try {
-      await ssh.removeRemoteUser(db.prepare('SELECT * FROM nodes WHERE id=?').get(u.node_id), u.name);
-      db.prepare('DELETE FROM users WHERE id=?').run(u.id);
-      console.log(`🗑️ Auto-deleted expired user: ${u.name} on node ${u.node_id}`);
-    } catch (e) { console.error(`Failed to delete expired user ${u.name}:`, e.message); }
+      const node = db.prepare('SELECT * FROM nodes WHERE id=?').get(u.node_id);
+      if (node) await ssh.stopRemoteUser(node, u.name);
+      db.prepare("UPDATE users SET billing_status='suspended' WHERE id=?").run(u.uid);
+      console.log(`⏸️ Suspended expired user: ${u.name} on node ${u.node_id}`);
+    } catch (e) { console.error(`Failed to suspend expired user ${u.name}:`, e.message); }
   }
 }
 
-setInterval(recordHistory,     5  * 60 * 1000);
-setInterval(cleanExpiredUsers, 60  * 60 * 1000);
+setInterval(recordHistory,       5  * 60 * 1000);
+setInterval(checkExpiredUsers,   5  * 60 * 1000);
 
 app.listen(PORT, () => {
   console.log(`🔒 MTG Panel running on http://0.0.0.0:${PORT}`);
-  console.log(`🔑 Auth token: ${AUTH_TOKEN}`);
+  console.log(`🔑 Auth token: ${AUTH_TOKEN.slice(0,8)}...`);
   console.log(`📦 Version: ${pkgVersion}`);
-  setTimeout(recordHistory,     10000);
-  setTimeout(cleanExpiredUsers,  5000);
+  setTimeout(recordHistory,       10000);
+  setTimeout(checkExpiredUsers,    5000);
 });

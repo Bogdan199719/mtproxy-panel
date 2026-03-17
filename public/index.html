@@ -616,14 +616,16 @@ const setToken = (t) => localStorage.setItem('mtg_token', t);
 const getTotpCode = () => sessionStorage.getItem('mtg_totp') || '';
 const setTotpCode = (c) => { if(c) sessionStorage.setItem('mtg_totp',c); else sessionStorage.removeItem('mtg_totp'); };
 
-/* ── API with GET dedup ─────────────────────────────────── */
+/* ── API with GET dedup + timeout ───────────────────────── */
 const _pend = {};
-const api = async (method, path, body) => {
+const api = async (method, path, body, timeoutMs=25000) => {
   const key = `${method}:${path}`;
   if (method==='GET' && _pend[key]) return _pend[key];
   const headers = { 'Content-Type':'application/json', 'x-auth-token': getToken() };
   const totp = getTotpCode(); if(totp) headers['x-totp-code'] = totp;
-  const req = fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined })
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const req = fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: controller.signal })
     .then(async r => {
       delete _pend[key];
       if(r.status===401){ setToken(''); throw new Error('Unauthorized'); }
@@ -631,7 +633,9 @@ const api = async (method, path, body) => {
       const data = await r.json();
       if(!r.ok) throw new Error(data.error||'API error');
       return data;
-    }).catch(e=>{ delete _pend[key]; throw e; });
+    })
+    .catch(e=>{ delete _pend[key]; throw e.name==='AbortError' ? new Error('Запрос истёк — нода не отвечает') : e; })
+    .finally(()=>clearTimeout(timer));
   if(method==='GET') _pend[key]=req;
   return req;
 };
@@ -649,6 +653,28 @@ function useToast() {
 }
 const toast = (msg, type) => _toast && _toast(msg, type);
 const copyText = (txt) => navigator.clipboard.writeText(txt).then(() => toast('Скопировано!', 'success'));
+// Конвертирует локальное время из datetime-local инпута в UTC строку для сервера
+const toUtc = (localStr) => {
+  if (!localStr) return null;
+  const d = new Date(localStr); // браузер считает как локальное время
+  if (isNaN(d)) return null;
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+};
+// Конвертирует UTC строку из базы в локальное время для datetime-local инпута
+const utcToLocal = (utcStr) => {
+  if (!utcStr) return '';
+  // Добавляем Z чтобы браузер точно понял что это UTC, потом берём локальное время
+  const d = new Date(utcStr.replace(' ','T') + 'Z');
+  if (isNaN(d)) return '';
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+// Парсит UTC строку из базы как UTC (не как локальное время)
+const parseUtc = (utcStr) => {
+  if (!utcStr) return null;
+  return new Date(utcStr.replace(' ','T') + 'Z');
+};
 
 function Toasts({ list }) {
   const icon = { success: <I.Check/>, error: <I.AlertCircle/>, info: <I.Info/> };
@@ -657,20 +683,31 @@ function Toasts({ list }) {
 
 /* ── Login ──────────────────────────────────────────────── */
 function Login({ onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [tok, setTok] = useState('');
-  const [step, setStep] = useState('token');
+  const [step, setStep] = useState('login');
   const [totp, setTotp] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const submitToken = async e => {
-    e.preventDefault(); if(!tok.trim()) return;
+  const submitLogin = async e => {
+    e.preventDefault(); if(!username.trim() || !password.trim()) return;
     setLoading(true);
     try {
-      setToken(tok);
-      const s = await fetch('/api/totp/status', { headers:{'x-auth-token':tok} }).then(r=>r.json());
+      const r = await fetch('/api/login', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ username, password })
+      });
+      const data = await r.json();
+      if (!r.ok) { toast(data.error || 'Ошибка входа', 'error'); return; }
+      const token = data.token;
+      setTok(token);
+      setToken(token);
+      const s = await fetch('/api/totp/status', { headers:{'x-auth-token':token} }).then(r=>r.json());
       if(s.enabled) { setStep('totp'); }
-      else { await api('GET','/api/nodes'); toast('Вход выполнен','success'); onLogin(tok); }
-    } catch { setToken(''); toast('Неверный токен','error'); }
+      else { await api('GET','/api/nodes'); toast('Вход выполнен','success'); onLogin(token); }
+    } catch { setToken(''); toast('Ошибка соединения','error'); }
     finally { setLoading(false); }
   };
 
@@ -691,12 +728,17 @@ function Login({ onLogin }) {
           <div className="login-sub">{step==='totp'?'two-factor auth':'mtg proxy manager'}</div>
         </div>
         <div className="login-body">
-          {step==='token' ? (
-            <form onSubmit={submitToken}>
+          {step==='login' ? (
+            <form onSubmit={submitLogin}>
               <div className="form-group">
-                <label className="form-label">Auth Token</label>
-                <input className="form-input" type="password" placeholder="Введи токен доступа..." value={tok}
-                  onChange={e=>setTok(e.target.value)} autoFocus />
+                <label className="form-label">Логин</label>
+                <input className="form-input" type="text" placeholder="Имя пользователя" value={username}
+                  onChange={e=>setUsername(e.target.value)} autoFocus />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Пароль</label>
+                <input className="form-input" type="password" placeholder="Пароль" value={password}
+                  onChange={e=>setPassword(e.target.value)} />
               </div>
               <button className="btn btn-primary" style={{width:'100%',justifyContent:'center',padding:10}} type="submit" disabled={loading}>
                 {loading ? <span className="spin spin-sm"/> : <><I.Zap/> Войти</>}
@@ -714,7 +756,7 @@ function Login({ onLogin }) {
               </div>
               <div style={{display:'flex',gap:8}}>
                 <button className="btn btn-ghost" style={{flex:1,justifyContent:'center'}} type="button"
-                  onClick={()=>{setStep('token');setToken('');setTotp('');}}>
+                  onClick={()=>{setStep('login');setToken('');setTotp('');setUsername('');setPassword('');}}>
                   <I.ArrowLeft/> Назад
                 </button>
                 <button className="btn btn-primary" style={{flex:1.5,justifyContent:'center'}} type="submit"
@@ -746,7 +788,7 @@ const flagUrl = (code, size='w40') => code ? `https://flagcdn.com/${size}/${code
 /* ── Shared UI components ───────────────────────────────── */
 function expiryBadge(expires_at, small) {
   if(!expires_at) return <span style={{color:'var(--t3)',fontSize:small?11:12}}>∞</span>;
-  const d = Math.floor((new Date(expires_at) - new Date()) / 86400000);
+  const d = Math.floor((parseUtc(expires_at) - new Date()) / 86400000);
   if(d < 0) return <span className="badge badge-red">истёк</span>;
   return <span style={{fontFamily:'var(--mono)',fontSize:small?11:12,color:d<3?'var(--am)':'var(--t2)'}}>{d}д</span>;
 }
@@ -1152,22 +1194,51 @@ function NodeModal({ node, onClose, onSave }) {
   const [auth, setAuth] = useState(node?.ssh_key ? 'key' : 'password');
   const [agentChecking, setAgentChecking] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null); // null | true | false
-  const [showInstall, setShowInstall] = useState(false);
+  const [setupLog, setSetupLog] = useState('');
+  const [setupRunning, setSetupRunning] = useState(false);
   const set = (k,v) => setF(x=>({...x,[k]:v}));
 
-  const submit = async () => {
+  const doSetup = async (nodeId) => {
+    setSetupRunning(true);
+    setSetupLog('Подключение к серверу...\nУстанавливаю Docker, xxd, MTG Agent (~1-2 мин)...');
+    try {
+      const r = await api('POST', `/api/nodes/${nodeId}/setup-node`);
+      setSetupLog(r.output || r.error || '');
+      if(r.ok && r.agent_ready) {
+        toast('Сервер готов, агент работает ✓', 'success');
+        setAgentStatus(true);
+        return true;
+      } else if(r.ok && !r.agent_ready) {
+        toast('Установка прошла, агент ещё стартует...', 'info');
+        setAgentStatus(false);
+        return false;
+      } else {
+        toast('Ошибка установки', 'error');
+        setAgentStatus(false);
+        return false;
+      }
+    } catch(e) { toast('Ошибка: ' + e.message, 'error'); setSetupLog(e.message); return false; }
+    finally { setSetupRunning(false); }
+  };
+
+  const submit = async (withSetup=false) => {
     if(!f.name||!f.host){toast('Заполни обязательные поля','error');return;}
     setLoading(true);
     try {
-      const payload = {...f, ssh_password: auth==='password' ? f.ssh_password : null, ssh_key: auth==='key' ? f.ssh_key : null };
-      if(node) { await api('PUT',`/api/nodes/${node.id}`,payload); toast('Нода обновлена','success'); }
-      else { await api('POST','/api/nodes',payload); toast('Нода добавлена','success'); }
-      onSave();
-    } catch(e){toast(e.message,'error');}
-    finally{setLoading(false);}
+      const payload = {...f, agent_port: f.agent_port||8081, ssh_password: auth==='password' ? f.ssh_password : null, ssh_key: auth==='key' ? f.ssh_key : null };
+      let savedId;
+      if(node) { await api('PUT',`/api/nodes/${node.id}`,payload); toast('Нода обновлена','success'); savedId = node.id; }
+      else { const r = await api('POST','/api/nodes',payload); toast('Нода добавлена','success'); savedId = r.id; }
+      setLoading(false);
+      if(withSetup && savedId) { const ok = await doSetup(savedId); if(ok) onSave(); }
+      else onSave();
+    } catch(e){toast(e.message,'error'); setLoading(false);}
   };
 
-  const [agentUpdating, setAgentUpdating] = useState(false);
+  const setupNode = async () => {
+    if(!node?.id) return;
+    await doSetup(node.id);
+  };
 
   const checkAgent = async () => {
     if(!node?.id) return;
@@ -1179,21 +1250,6 @@ function NodeModal({ node, onClose, onSave }) {
     } catch { setAgentStatus(false); }
     finally { setAgentChecking(false); }
   };
-
-  const updateAgent = async () => {
-    if(!node?.id) return;
-    setAgentUpdating(true);
-    toast('Обновление агента...', 'info');
-    try {
-      const r = await api('POST', `/api/nodes/${node.id}/update-agent`);
-      if(r.ok) toast('Агент обновлён ✓', 'success');
-      else toast('Ошибка обновления: ' + (r.error || r.output), 'error');
-      setAgentStatus(null);
-    } catch(e) { toast('Ошибка: ' + e.message, 'error'); }
-    finally { setAgentUpdating(false); }
-  };
-
-  const installCmd = `mkdir -p /opt/mtg-agent && cd /opt/mtg-agent && curl -fsSL https://raw.githubusercontent.com/MaksimTMB/mtg-adminpanel/dev/mtg-agent/install-agent.sh | bash`;
 
   return (
     <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -1237,53 +1293,63 @@ function NodeModal({ node, onClose, onSave }) {
           }
 
           {/* Agent section */}
-          <div style={{borderTop:'1px solid var(--b1)',paddingTop:16,marginTop:4}}>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
-              <div style={{fontSize:13,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
-                <I.Activity/> MTG Agent
-                {agentStatus===true && <span className="badge badge-green" style={{fontSize:10}}>доступен</span>}
-                {agentStatus===false && <span className="badge badge-red" style={{fontSize:10}}>недоступен</span>}
-                {node?.agent_port && agentStatus===null && <span className="badge badge-purple" style={{fontSize:10}}>порт {node.agent_port}</span>}
+          {setupRunning && (
+            <div style={{borderTop:'1px solid var(--b1)',paddingTop:14,marginTop:4}}>
+              <div style={{fontSize:13,fontWeight:600,display:'flex',alignItems:'center',gap:8,marginBottom:10,color:'var(--cy)'}}>
+                <span className="spin spin-sm"/> Подготовка сервера...
               </div>
-              <div style={{display:'flex',gap:8}}>
-                {node && <button className="btn btn-ghost btn-sm" onClick={checkAgent} disabled={agentChecking}>
-                  {agentChecking?<><span className="spin spin-sm"/> проверка</>:<><I.Wifi/> Проверить</>}
-                </button>}
-                {node && <button className="btn btn-secondary btn-sm" onClick={updateAgent} disabled={agentUpdating}>
-                  {agentUpdating?<><span className="spin spin-sm"/> обновление...</>:<><I.RefreshCw/> Обновить</>}
-                </button>}
-                <button className="btn btn-ghost btn-sm" onClick={()=>setShowInstall(!showInstall)}>
-                  <I.Download/> Установить
+              {setupLog && <pre style={{fontFamily:'var(--mono)',fontSize:10,color:'var(--t2)',whiteSpace:'pre-wrap',wordBreak:'break-all',maxHeight:160,overflow:'auto',margin:0,background:'var(--bg)',padding:'8px 10px',borderRadius:7,border:'1px solid var(--b1)'}}>{setupLog}</pre>}
+            </div>
+          )}
+          {!setupRunning && setupLog && (
+            <div style={{borderTop:'1px solid var(--b1)',paddingTop:14,marginTop:4}}>
+              <div style={{marginBottom:8,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                {agentStatus===true
+                  ? <span style={{fontWeight:600,color:'var(--gr)',display:'flex',alignItems:'center',gap:5,fontSize:13}}><I.Check/> Сервер готов, агент работает</span>
+                  : <span style={{fontWeight:600,color:'#f59e0b',display:'flex',alignItems:'center',gap:5,fontSize:13}}><I.Activity/> Установка завершена — проверьте агента</span>
+                }
+                <button className="btn btn-ghost btn-sm" onClick={checkAgent} disabled={agentChecking} style={{marginLeft:'auto'}}>
+                  {agentChecking?<><span className="spin spin-sm"/> проверка...</>:<><I.Wifi/> Проверить агента</>}
                 </button>
+                <button className="btn btn-ghost btn-sm" onClick={setupNode} disabled={setupRunning}><I.RefreshCw/> Повторить</button>
               </div>
+              {agentStatus===false && <div style={{fontSize:12,color:'#f59e0b',marginBottom:8,padding:'6px 10px',background:'rgba(245,158,11,0.1)',borderRadius:6,border:'1px solid rgba(245,158,11,0.3)'}}>
+                Агент ещё стартует — подожди 30–60 сек и нажми «Проверить агента»
+              </div>}
+              <pre style={{fontFamily:'var(--mono)',fontSize:10,color:'var(--t2)',whiteSpace:'pre-wrap',wordBreak:'break-all',maxHeight:160,overflow:'auto',margin:0,background:'var(--bg)',padding:'8px 10px',borderRadius:7,border:'1px solid var(--b1)'}}>{setupLog}</pre>
             </div>
-            <div className="form-group">
-              <label className="form-label">Порт агента (оставь пустым если не установлен)</label>
-              <input className="form-input" type="number" placeholder="8081" value={f.agent_port||''}
-                onChange={e=>set('agent_port', e.target.value ? parseInt(e.target.value) : null)}/>
-            </div>
-            {showInstall && (
-              <div style={{background:'var(--bg3)',borderRadius:10,padding:14,border:'1px solid var(--b1)'}}>
-                <div style={{fontSize:12,color:'var(--t3)',marginBottom:8}}>Выполни на ноде {f.host}:</div>
-                <div style={{display:'flex',gap:8,alignItems:'flex-start'}}>
-                  <code style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--cy)',flex:1,wordBreak:'break-all',lineHeight:1.6,background:'var(--bg)',padding:'8px 10px',borderRadius:7,border:'1px solid var(--b1)'}}>
-                    {`mkdir -p /opt/mtg-agent && cd /opt/mtg-agent && curl -fsSL https://raw.githubusercontent.com/MaksimTMB/mtg-adminpanel/dev/mtg-agent/install-agent.sh | bash`}
-                  </code>
-                  <button className="btn btn-secondary btn-sm" style={{flexShrink:0}}
-                    onClick={()=>{copyText(`mkdir -p /opt/mtg-agent && cd /opt/mtg-agent && curl -fsSL https://raw.githubusercontent.com/MaksimTMB/mtg-adminpanel/dev/mtg-agent/install-agent.sh | bash`); toast('Скопировано','success');}}>
-                    <I.Copy/>
-                  </button>
-                </div>
-                <div style={{fontSize:11,color:'var(--t3)',marginTop:8}}>После установки порт агента: <strong>8081</strong></div>
+          )}
+          {node && !setupRunning && !setupLog && (
+            <div style={{borderTop:'1px solid var(--b1)',paddingTop:14,marginTop:4,display:'flex',alignItems:'center',gap:10}}>
+              <div style={{fontSize:13,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
+                <I.Activity/>
+                {agentStatus===true && <span className="badge badge-green">агент доступен</span>}
+                {agentStatus===false && <span className="badge badge-red">агент недоступен</span>}
+                {agentStatus===null && <span className="badge badge-purple">порт {node.agent_port||8081}</span>}
               </div>
-            )}
-          </div>
+              <button className="btn btn-ghost btn-sm" onClick={checkAgent} disabled={agentChecking}>
+                {agentChecking?<><span className="spin spin-sm"/> проверка...</>:<><I.Wifi/> Проверить</>}
+              </button>
+              <button className="btn btn-primary btn-sm" onClick={setupNode} disabled={setupRunning}>
+                <I.Zap/> Переустановить агента
+              </button>
+            </div>
+          )}
         </div>
         <div className="modal-foot">
-          <button className="btn btn-ghost" onClick={onClose}>Отмена</button>
-          <button className="btn btn-primary" onClick={submit} disabled={loading}>
-            {loading?<span className="spin spin-sm"/>:(node?<><I.Check/> Сохранить</>:<><I.Plus/> Добавить</>)}
-          </button>
+          <button className="btn btn-ghost" onClick={onClose} disabled={loading||setupRunning}>Отмена</button>
+          {node ? (
+            <button className="btn btn-primary" onClick={()=>submit(false)} disabled={loading||setupRunning}>
+              {loading?<span className="spin spin-sm"/>:<><I.Check/> Сохранить</>}
+            </button>
+          ) : (<>
+            <button className="btn btn-secondary" onClick={()=>submit(false)} disabled={loading||setupRunning}>
+              {loading?<span className="spin spin-sm"/>:'Только добавить'}
+            </button>
+            <button className="btn btn-primary" onClick={()=>submit(true)} disabled={loading||setupRunning}>
+              {loading?<span className="spin spin-sm"/>:<><I.Zap/> Добавить и подготовить сервер</>}
+            </button>
+          </>)}
         </div>
       </div>
     </div>
@@ -1455,6 +1521,18 @@ function NodePage({ node, onBack, onManage, onReload }) {
                 <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--vi)'}}>:{node.agent_port}</div>
               </div>
             )}
+            {node.cpu_cores && (
+              <div>
+                <div style={{fontSize:11,color:'var(--t3)',marginBottom:4}}>CPU</div>
+                <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--t2)'}}>{node.cpu_cores} ядер</div>
+              </div>
+            )}
+            {node.ram_mb && (
+              <div>
+                <div style={{fontSize:11,color:'var(--t3)',marginBottom:4}}>RAM</div>
+                <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--t2)'}}>{node.ram_mb >= 1024 ? (node.ram_mb/1024).toFixed(1)+' GB' : node.ram_mb+' MB'}</div>
+              </div>
+            )}
           </div>
           <span className={`badge ${isOnline===null?'':isOnline?'badge-green':'badge-red'}`} style={{fontSize:13,padding:'8px 14px'}}>
             <span className={`dot ${isOnline?'dot-live':''}`}/>
@@ -1555,7 +1633,7 @@ function AddUserModal({ nodeId, onClose, onSave }) {
     try {
       const u = await api('POST',`/api/nodes/${nodeId}/users`,{
         name:f.name.trim(), note:f.note||'',
-        expires_at:f.expires_at||null,
+        expires_at:toUtc(f.expires_at),
         traffic_limit_gb:f.traffic_limit_gb?parseFloat(f.traffic_limit_gb):null
       });
       toast(`Юзер ${u.name} создан`,'success'); onSave(u);
@@ -1603,7 +1681,7 @@ function AddUserModal({ nodeId, onClose, onSave }) {
 function EditModal({ user, nodeId, onClose, onSave }) {
   const [f, setF] = useState({
     note: user.note||'',
-    expires_at: user.expires_at ? user.expires_at.replace(' ','T').slice(0,16) : '',
+    expires_at: utcToLocal(user.expires_at),
     traffic_limit_gb: user.traffic_limit_gb||'',
     max_devices: user.max_devices||'',
     traffic_reset_interval: user.traffic_reset_interval||'never',
@@ -1616,7 +1694,7 @@ function EditModal({ user, nodeId, onClose, onSave }) {
     try {
       await api('PUT', `/api/nodes/${nodeId}/users/${user.name}`, {
         note: f.note,
-        expires_at: f.expires_at||null,
+        expires_at: toUtc(f.expires_at),
         traffic_limit_gb: f.traffic_limit_gb ? parseFloat(f.traffic_limit_gb) : null,
         max_devices: f.max_devices ? parseInt(f.max_devices) : null,
         traffic_reset_interval: f.traffic_reset_interval !== 'never' ? f.traffic_reset_interval : null,
@@ -1704,7 +1782,7 @@ function EditModal({ user, nodeId, onClose, onSave }) {
             </div>
             {user.next_reset_at && (
               <div style={{fontSize:11,color:'var(--t3)',marginTop:4}}>
-                Следующий сброс: <span style={{color:'var(--t2)'}}>{new Date(user.next_reset_at).toLocaleString('ru-RU')}</span>
+                Следующий сброс: <span style={{color:'var(--t2)'}}>{parseUtc(user.next_reset_at).toLocaleString('ru-RU')}</span>
               </div>
             )}
           </div>
@@ -1746,21 +1824,37 @@ function EditModal({ user, nodeId, onClose, onSave }) {
 function UsersPage({ node, onBack }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState(null);
   const [ref, setRef] = useState(false);
   const [modal, setModal] = useState(false);
   const [busy, setBusy] = useState({});
   const [editU, setEditU] = useState(null);
   const [qrU, setQrU] = useState(null);
   const [traffic, setTraffic] = useState({});
+  const [nodeOnline, setNodeOnline] = useState(null);
 
   const loadUsers = useCallback(async (silent=false) => {
     if(silent) setRef(true); else setLoading(true);
-    try { const u = await api('GET',`/api/nodes/${node.id}/users`); setUsers(u); }
-    finally { setLoading(false); setRef(false); }
+    setLoadErr(null);
+    try {
+      const u = await api('GET',`/api/nodes/${node.id}/users`);
+      setUsers(u);
+      setNodeOnline(true); // если получили данные — нода точно доступна
+    } catch(e) {
+      setLoadErr(e.message);
+      setNodeOnline(prev => prev === true ? true : false);
+    } finally { setLoading(false); setRef(false); }
   }, [node.id]);
 
   const loadTraffic = useCallback(async () => {
-    try { const t = await api('GET',`/api/nodes/${node.id}/traffic`); setTraffic(t||{}); } catch {}
+    try { const t = await api('GET',`/api/nodes/${node.id}/traffic`,undefined,10000); setTraffic(t||{}); } catch {}
+  }, [node.id]);
+
+  const checkOnline = useCallback(async () => {
+    // Используем /check (SSH или агент), а не /check-agent чтобы не ложно показывать ошибку
+    // когда агент не настроен
+    try { const r = await api('GET',`/api/nodes/${node.id}/check`,undefined,12000); setNodeOnline(r.online); }
+    catch { setNodeOnline(prev => prev === true ? true : false); }
   }, [node.id]);
 
   const syncUsers = async () => {
@@ -1771,7 +1865,7 @@ function UsersPage({ node, onBack }) {
     } catch(e){toast(e.message,'error');}
   };
 
-  useEffect(()=>{ loadUsers(); loadTraffic(); },[loadUsers,loadTraffic]);
+  useEffect(()=>{ loadUsers(); loadTraffic(); checkOnline(); },[loadUsers,loadTraffic,checkOnline]);
   useEffect(()=>{ const t=setInterval(()=>loadTraffic(),30000); return()=>clearInterval(t); },[loadTraffic]);
 
   const setBusyFor = (n,v) => setBusy(b=>({...b,[n]:v}));
@@ -1822,12 +1916,35 @@ function UsersPage({ node, onBack }) {
           {ref && <span className="refreshing"><span className="spin"/> обновление</span>}
           <button className="btn btn-ghost btn-sm" onClick={()=>loadUsers(true)}><I.RefreshCw/></button>
           <button className="btn btn-secondary btn-sm" onClick={syncUsers}><I.Sync/> Синхр.</button>
-          <button className="btn btn-primary btn-sm" onClick={()=>setModal(true)}><I.Plus/> Добавить</button>
+          <button className="btn btn-primary btn-sm" onClick={()=>{
+            if(nodeOnline===false){toast('Нода недоступна — сначала подготовьте сервер в настройках ноды','error');return;}
+            setModal(true);
+          }}><I.Plus/> Добавить</button>
         </div>
       </div>
 
+      {nodeOnline===false && (
+        <div style={{background:'rgba(251,113,133,0.12)',border:'1px solid rgba(251,113,133,0.4)',borderRadius:10,padding:'12px 16px',marginBottom:16,display:'flex',alignItems:'center',gap:10}}>
+          <I.WifiOff style={{color:'var(--re)',flexShrink:0}}/>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:600,color:'var(--re)',fontSize:13}}>Нода недоступна</div>
+            <div style={{fontSize:12,color:'var(--t2)',marginTop:2}}>Сервер не отвечает по SSH. Убедись что нода включена, или зайди в настройки и нажми <strong>«Подготовить сервер»</strong>.</div>
+          </div>
+          <button className="btn btn-secondary btn-sm" style={{flexShrink:0}} onClick={()=>{setNodeOnline(null);checkOnline();loadUsers(true);}}>
+            <I.RefreshCw style={{width:14,height:14}}/> Повторить
+          </button>
+        </div>
+      )}
+
       <div className="card">
-        {loading ? <div className="loading-center"><span className="spin"/> Загружаю юзеров...</div> : (
+        {loading ? <div className="loading-center"><span className="spin"/> Загружаю клиентов...</div> :
+        loadErr ? (
+          <div style={{padding:'32px 24px',textAlign:'center'}}>
+            <div style={{color:'var(--re)',fontWeight:600,marginBottom:8}}>Ошибка загрузки</div>
+            <div style={{fontSize:13,color:'var(--t3)',marginBottom:16}}>{loadErr}</div>
+            <button className="btn btn-secondary btn-sm" onClick={()=>loadUsers()}><I.RefreshCw style={{width:14,height:14}}/> Повторить</button>
+          </div>
+        ) : (
           <div className="table-wrap">
             <table>
               <thead><tr>
@@ -1885,7 +2002,7 @@ function UsersPage({ node, onBack }) {
                         {u.traffic_limit_gb && <span style={{fontSize:11,color:'var(--t3)',fontFamily:'var(--mono)'}}>{u.traffic_limit_gb}GB</span>}
                         {!u.expires_at && !u.traffic_limit_gb && <span style={{color:'var(--t3)',fontSize:12}}>∞</span>}
                         {u.traffic_reset_interval && u.traffic_reset_interval !== 'never' && (
-                          <span style={{fontSize:10,color:'var(--vi)'}} title={u.next_reset_at ? `Следующий: ${new Date(u.next_reset_at).toLocaleString('ru-RU')}` : ''}>
+                          <span style={{fontSize:10,color:'var(--vi)'}} title={u.next_reset_at ? `Следующий: ${parseUtc(u.next_reset_at).toLocaleString('ru-RU')}` : ''}>
                             ↺ {u.traffic_reset_interval === 'daily' ? 'день' : u.traffic_reset_interval === 'monthly' ? 'мес' : 'год'}
                           </span>
                         )}
@@ -1933,6 +2050,10 @@ function AllUsers({ nodes, onSelectNode }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Зависим только от node IDs, чтобы loadCounts (добавляет _userCount без изменения ID)
+  // не вызывал повторный load каждый раз
+  const nodeIds = nodes.map(n=>n.id).join(',');
+
   const load = useCallback(async (silent=false) => {
     if(silent) setRefreshing(true); else setLoading(true);
     try {
@@ -1942,15 +2063,15 @@ function AllUsers({ nodes, onSelectNode }) {
             api('GET', `/api/nodes/${n.id}/users`),
             api('GET', `/api/nodes/${n.id}/traffic`).catch(() => ({}))
           ]);
-          // Merge traffic into each user
           return [n.id, users.map(u => ({...u, traffic: traffic[u.name] || null}))];
         } catch { return [n.id, []]; }
       }));
       setGroups(Object.fromEntries(res));
     } finally { setLoading(false); setRefreshing(false); }
-  }, [nodes]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeIds]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if(nodes.length) load(); }, [load]);
 
   const totalUsers = Object.values(groups).reduce((a, u) => a + u.length, 0);
   const totalActive = Object.values(groups).reduce((a, u) => a + u.filter(x => x.running).length, 0);
@@ -2177,13 +2298,10 @@ function App() {
     try { const n = await api('GET','/api/nodes'); setNodes(n||[]); } catch {}
   }, []);
 
-  const loadCounts = useCallback(async (list) => {
+  const loadCounts = useCallback(async () => {
     try {
-      const wc = await Promise.all(list.map(async n => {
-        try { const u = await api('GET',`/api/nodes/${n.id}/users`); return {...n,_userCount:u.length}; }
-        catch { return {...n,_userCount:0}; }
-      }));
-      setNodes(wc);
+      const counts = await api('GET', '/api/counts');
+      setNodes(prev => prev.map(n => ({...n, _userCount: counts[n.id] ?? 0})));
     } catch {}
   }, []);
 
@@ -2194,7 +2312,7 @@ function App() {
   }, []);
 
   useEffect(()=>{ if(authed) loadNodes(); },[authed]);
-  useEffect(()=>{ if(nodes.length&&!nodes[0]._userCount) loadCounts(nodes); },[nodes]);
+  useEffect(()=>{ if(nodes.length && nodes[0]._userCount == null) loadCounts(); },[nodes]);
 
   const nav = (p) => { setPage(p); setSelNode(null); setSelNodeView(null); };
   const selectNode = (n) => { setSelNode(n); setPage('users'); };
