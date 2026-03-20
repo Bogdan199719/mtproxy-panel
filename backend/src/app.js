@@ -705,24 +705,32 @@ app.delete('/api/nodes/:id/users/:name', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Stop: save traffic snapshot before stopping so UI keeps last known value
-app.post('/api/nodes/:id/users/:name/stop', async (req, res) => {
+// Stop: respond immediately, then save traffic snapshot and stop container in background
+app.post('/api/nodes/:id/users/:name/stop', (req, res) => {
   const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(req.params.id);
   if (!node) return res.status(404).json({ error: 'Node not found' });
-  try {
-    // Save traffic snapshot before stopping
+  const { id: nodeId, name: userName } = { id: req.params.id, name: req.params.name };
+
+  // Return immediately so the bot doesn't hang
+  res.json({ ok: true, status: 'pending' });
+
+  // Do the actual work in the background
+  (async () => {
     try {
-      const traffic = await ssh.getTraffic(node);
-      const ut = traffic[req.params.name];
-      if (ut) {
-        db.prepare('UPDATE users SET traffic_rx_snap=?, traffic_tx_snap=? WHERE node_id=? AND name=?')
-          .run(ut.rx, ut.tx, req.params.id, req.params.name);
-      }
-    } catch (_) {}
-    await ssh.stopRemoteUser(node, req.params.name);
-    db.prepare('UPDATE users SET status=? WHERE node_id=? AND name=?').run('stopped', req.params.id, req.params.name);
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+      try {
+        const traffic = await ssh.getTraffic(node);
+        const ut = traffic[userName];
+        if (ut) {
+          db.prepare('UPDATE users SET traffic_rx_snap=?, traffic_tx_snap=? WHERE node_id=? AND name=?')
+            .run(ut.rx, ut.tx, nodeId, userName);
+        }
+      } catch (_) {}
+      await ssh.stopRemoteUser(node, userName);
+      db.prepare('UPDATE users SET status=? WHERE node_id=? AND name=?').run('stopped', nodeId, userName);
+    } catch (e) {
+      console.error(`Background stop failed for ${userName} on node ${nodeId}:`, e.message);
+    }
+  })();
 });
 
 app.post('/api/nodes/:id/users/:name/start', async (req, res) => {

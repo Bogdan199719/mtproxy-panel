@@ -164,6 +164,7 @@ POST /api/login   { "username": "...", "password": "..." }
 | Метод | URL | Описание |
 |-------|-----|----------|
 | GET | `/api/nodes` | Список нод |
+| GET | `/api/nodes/best` | Нода с наименьшим числом клиентов (для автопровизионинга) |
 | POST | `/api/nodes` | Создать |
 | PUT | `/api/nodes/:id` | Обновить |
 | DELETE | `/api/nodes/:id` | Удалить |
@@ -177,12 +178,20 @@ POST /api/login   { "username": "...", "password": "..." }
 | Метод | URL | Описание |
 |-------|-----|----------|
 | GET | `/api/nodes/:id/users` | Список с метриками |
-| POST | `/api/nodes/:id/users` | Создать |
+| POST | `/api/nodes/:id/users` | Создать. Ответ содержит `link: tg://proxy?...` |
 | PUT | `/api/nodes/:id/users/:name` | Обновить |
 | DELETE | `/api/nodes/:id/users/:name` | Удалить |
-| POST | `/api/nodes/:id/users/:name/stop` | Остановить |
+| POST | `/api/nodes/:id/users/:name/renew` | Продлить подписку. Body: `{"days": 30}`. Считает от текущей даты истечения (или от сейчас). Автозапускает suspended-клиентов. |
+| POST | `/api/nodes/:id/users/:name/stop` | Остановить (асинхронно, возвращает `{"ok":true,"status":"pending"}` сразу) |
 | POST | `/api/nodes/:id/users/:name/start` | Запустить |
 | POST | `/api/nodes/:id/users/:name/reset-traffic` | Сбросить трафик |
+
+### Поиск клиентов
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| GET | `/api/users` | Поиск по всем нодам. Query: `name`, `note`, `node_id`, `limit`, `offset` |
+| GET | `/api/users/:name` | Найти клиента по точному имени. Ответ содержит `link` |
 
 ---
 
@@ -197,6 +206,13 @@ docker compose down && docker compose up -d --build
 ---
 
 ## Changelog
+
+### v2.2.0
+- Новый endpoint `GET /api/nodes/best` — возвращает ноду с наименьшим числом клиентов (для интеграций и ботов)
+- Новый endpoint `POST /api/nodes/:id/users/:name/renew` — продление подписки на N дней без пересоздания прокси
+- `POST /api/nodes/:id/users/:name/stop` — теперь асинхронный: отвечает сразу `{"ok":true,"status":"pending"}`, остановка идёт в фоне
+- Новые endpoints поиска: `GET /api/users` и `GET /api/users/:name`
+- Полная документация API в `GET /api/docs`
 
 ### v2.1.0
 - Авто-оптимизация ноды при подготовке (BBR, UFW, ulimits, Docker log limits, CPU/RAM detection)
