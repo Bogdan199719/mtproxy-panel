@@ -661,11 +661,12 @@ const toUtc = (localStr) => {
   const pad = n => String(n).padStart(2,'0');
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 };
+// Нормализует строку даты из БД в ISO 8601 (убирает пробел, лишние Z, миллисекунды)
+const normDateStr = (s) => s ? s.replace(' ','T').replace(/(\.\d+)?Z?$/i,'') + 'Z' : s;
 // Конвертирует UTC строку из базы в локальное время для datetime-local инпута
 const utcToLocal = (utcStr) => {
   if (!utcStr) return '';
-  // Добавляем Z чтобы браузер точно понял что это UTC, потом берём локальное время
-  const d = new Date(utcStr.replace(' ','T') + 'Z');
+  const d = new Date(normDateStr(utcStr));
   if (isNaN(d)) return '';
   const pad = n => String(n).padStart(2,'0');
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -673,7 +674,7 @@ const utcToLocal = (utcStr) => {
 // Парсит UTC строку из базы как UTC (не как локальное время)
 const parseUtc = (utcStr) => {
   if (!utcStr) return null;
-  return new Date(utcStr.replace(' ','T') + 'Z');
+  return new Date(normDateStr(utcStr));
 };
 
 function Toasts({ list }) {

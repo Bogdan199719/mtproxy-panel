@@ -623,7 +623,12 @@ app.post('/api/nodes/:id/sync', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-const normalizeDate = (d) => d ? d.replace('T', ' ') : null;
+const normalizeDate = (d) => {
+  if (!d) return null;
+  const dt = new Date(d);
+  if (isNaN(dt)) return null;
+  return dt.toISOString().replace('T', ' ').slice(0, 19);
+};
 
 app.post('/api/nodes/:id/users', async (req, res) => {
   const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(req.params.id);
