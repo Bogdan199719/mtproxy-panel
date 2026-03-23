@@ -4,15 +4,16 @@ services:
     container_name: mtg-panel
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
     volumes:
       - ./data:/data
       - ./ssh_keys:/ssh_keys:ro
     environment:
-      - PORT=3000
+      - PORT=${PORT:-3000}
       - DATA_DIR=/data
       - AUTH_TOKEN=${AUTH_TOKEN:-changeme}
       - AGENT_TOKEN=${AGENT_TOKEN:-mtg-agent-secret}
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - PANEL_URL=${PANEL_URL:-https://fn.viplinilo.ru}
+      - REPO_SLUG=${REPO_SLUG:-Bogdan199719/mtproxy-panel}

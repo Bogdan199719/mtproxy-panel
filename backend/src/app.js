@@ -11,6 +11,7 @@ const AUTH_TOKEN     = process.env.AUTH_TOKEN || 'changeme';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const PORT           = process.env.PORT || 3000;
+const REPO_SLUG      = process.env.REPO_SLUG || 'Bogdan199719/mtproxy-panel';
 const crypto         = require('crypto');
 
 // Version: /app/src/app.js → ../package.json = /app/package.json = backend/package.json in Docker
@@ -115,7 +116,7 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // ── Public endpoints (no auth) ────────────────────────────
 app.get('/api/version', (req, res) => {
-  res.json({ version: pkgVersion });
+  res.json({ version: pkgVersion, repo_slug: REPO_SLUG });
 });
 
 app.get('/api/health', (req, res) => {
@@ -434,7 +435,7 @@ DOCKER`,
     // ── User dir + MTG Agent setup ──────────────────────────
     `mkdir -p ${baseDir}`,
     `mkdir -p /opt/mtg-agent && cd /opt/mtg-agent`,
-    `wget -q https://raw.githubusercontent.com/MaksimTMB/mtg-adminpanel/main/mtg-agent/install-agent.sh -O install.sh`,
+    `wget -q https://raw.githubusercontent.com/${REPO_SLUG}/main/mtg-agent/install-agent.sh -O install.sh`,
     `bash install.sh ${agentToken}`,
     'echo "==SETUP_DONE=="'
   ].join(' && ');
@@ -490,7 +491,7 @@ app.post('/api/nodes/:id/update-agent', async (req, res) => {
   if (!node) return res.status(404).json({ error: 'Not found' });
   const token = process.env.AGENT_TOKEN || 'mtg-agent-secret';
   // Use wget (more universally available than curl), write to temp file
-  const RAW = 'https://raw.githubusercontent.com/MaksimTMB/mtg-adminpanel/dev/mtg-agent';
+  const RAW = `https://raw.githubusercontent.com/${REPO_SLUG}/main/mtg-agent`;
   const cmd = [
     `mkdir -p /opt/mtg-agent && cd /opt/mtg-agent`,
     `wget -q "${RAW}/main.py" -O main.py`,

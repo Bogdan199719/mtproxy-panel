@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 cd /tmp
 
 INSTALL_DIR="/opt/mtg-adminpanel"
@@ -16,7 +17,10 @@ if [ ! -d "$INSTALL_DIR/.git" ]; then
 fi
 
 cd "$INSTALL_DIR"
-git pull
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+git fetch origin "$BRANCH"
+git merge --ff-only "origin/$BRANCH"
+docker compose down
 docker compose up -d --build
 echo "✅ Панель обновлена!"
 echo "$(docker ps | grep mtg-panel)"

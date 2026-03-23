@@ -652,7 +652,28 @@ function useToast() {
   return toasts;
 }
 const toast = (msg, type) => _toast && _toast(msg, type);
-const copyText = (txt) => navigator.clipboard.writeText(txt).then(() => toast('Скопировано!', 'success'));
+const copyText = async (txt) => {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(txt);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = txt;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (!ok) throw new Error('copy failed');
+    }
+    toast('Скопировано!', 'success');
+  } catch {
+    toast('Не удалось скопировать автоматически', 'error');
+  }
+};
 // Конвертирует локальное время из datetime-local инпута в UTC строку для сервера
 const toUtc = (localStr) => {
   if (!localStr) return null;
@@ -871,16 +892,15 @@ function parseVer(raw) {
   return { name: raw.slice(0,20), date: null };
 }
 
-const PANEL_VERSION_FALLBACK = 'v1.6.0'; // fallback if API unavailable
+const PANEL_VERSION_FALLBACK = 'v2.2.0';
 
-function VersionBlock({ nodes, panelVersion }) {
+function VersionBlock({ nodes, panelVersion, repoSlug }) {
   const [versions, setVersions] = useState({});
   const [updating, setUpdating] = useState({});
   const [checking, setChecking] = useState(false);
   const [open, setOpen] = useState(false);
   const [latestRelease, setLatestRelease] = useState(null);
   const [checkingRelease, setCheckingRelease] = useState(false);
-
   const checkVersions = useCallback(async () => {
     if(!nodes.length) return;
     setChecking(true);
@@ -898,12 +918,12 @@ function VersionBlock({ nodes, panelVersion }) {
   const checkLatestRelease = useCallback(async () => {
     setCheckingRelease(true);
     try {
-      const r = await fetch('https://api.github.com/repos/MaksimTMB/mtg-adminpanel/releases/latest');
+      const r = await fetch(`https://api.github.com/repos/${repoSlug}/releases/latest`);
       const data = await r.json();
       if(data.tag_name) setLatestRelease({ tag: data.tag_name, url: data.html_url });
     } catch {}
     finally { setCheckingRelease(false); }
-  }, []);
+  }, [repoSlug]);
 
   useEffect(() => { if(nodes.length) checkVersions(); }, [nodes.length]);
   useEffect(() => { if(open && !latestRelease) checkLatestRelease(); }, [open]);
@@ -982,7 +1002,7 @@ function VersionBlock({ nodes, panelVersion }) {
                         <I.Download/> {latestRelease.tag}
                       </a>
                     )}
-                    <a href="https://github.com/MaksimTMB/mtg-adminpanel/releases" target="_blank"
+                    <a href={`https://github.com/${repoSlug}/releases`} target="_blank"
                       className="btn btn-ghost btn-sm" style={{textDecoration:'none'}}>
                       Releases
                     </a>
@@ -1226,7 +1246,14 @@ function NodeModal({ node, onClose, onSave }) {
     if(!f.name||!f.host){toast('Заполни обязательные поля','error');return;}
     setLoading(true);
     try {
-      const payload = {...f, agent_port: f.agent_port||8081, ssh_password: auth==='password' ? f.ssh_password : null, ssh_key: auth==='key' ? f.ssh_key : null };
+      const payload = {
+        ...f,
+        ssh_port: Number.isFinite(f.ssh_port) ? f.ssh_port : 22,
+        start_port: Number.isFinite(f.start_port) ? f.start_port : 4433,
+        agent_port: Number.isFinite(f.agent_port) ? f.agent_port : 8081,
+        ssh_password: auth==='password' ? f.ssh_password : null,
+        ssh_key: auth==='key' ? f.ssh_key : null
+      };
       let savedId;
       if(node) { await api('PUT',`/api/nodes/${node.id}`,payload); toast('Нода обновлена','success'); savedId = node.id; }
       else { const r = await api('POST','/api/nodes',payload); toast('Нода добавлена','success'); savedId = r.id; }
@@ -2293,6 +2320,7 @@ function App() {
   const [selNode, setSelNode] = useState(null);      // for users page
   const [selNodeView, setSelNodeView] = useState(null); // for node detail page
   const [panelVersion, setPanelVersion] = useState(null);
+  const [repoSlug, setRepoSlug] = useState('Bogdan199719/mtproxy-panel');
   const toasts = useToast();
 
   const loadNodes = useCallback(async () => {
@@ -2308,8 +2336,12 @@ function App() {
 
   useEffect(() => {
     api('GET', '/api/version')
-      .then(r => setPanelVersion(r.version ? (r.version.startsWith('v') ? r.version : `v${r.version}`) : null))
-      .catch(() => {});
+      .then(r => {
+        if (r.repo_slug) setRepoSlug(r.repo_slug);
+        const ver = r.version || PANEL_VERSION_FALLBACK;
+        setPanelVersion(ver.startsWith('v') ? ver : `v${ver}`);
+      })
+      .catch(() => setPanelVersion(PANEL_VERSION_FALLBACK));
   }, []);
 
   useEffect(()=>{ if(authed) loadNodes(); },[authed]);
@@ -2348,7 +2380,7 @@ function App() {
           ))}
         </nav>
 
-        <VersionBlock nodes={nodes} panelVersion={panelVersion}/>
+        <VersionBlock nodes={nodes} panelVersion={panelVersion} repoSlug={repoSlug}/>
 
         <div className="sidebar-footer">
           <button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center',marginTop:8}}

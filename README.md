@@ -2,7 +2,7 @@
 
 Веб-панель управления MTProto прокси серверами (MTG v2). Управляй неограниченным количеством нод и клиентов через единый интерфейс.
 
-![Version](https://img.shields.io/badge/version-2.1.0-blue)
+![Version](https://img.shields.io/badge/version-2.2.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Node](https://img.shields.io/badge/node-20-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-required-blue)
@@ -119,6 +119,7 @@ server {
 | `PORT` | Порт панели | По умолчанию `3000` |
 | `PANEL_URL` | URL панели (для CORS) | По умолчанию `http://localhost:3000` |
 | `DATA_DIR` | Путь к базе данных | По умолчанию `/data` |
+| `REPO_SLUG` | GitHub репозиторий для релизов и файлов агента | По умолчанию `Bogdan199719/mtproxy-panel` |
 
 ---
 
@@ -199,8 +200,7 @@ POST /api/login   { "username": "...", "password": "..." }
 
 ```bash
 cd /opt/mtg-adminpanel
-git pull
-docker compose down && docker compose up -d --build
+bash update.sh
 ```
 
 ---

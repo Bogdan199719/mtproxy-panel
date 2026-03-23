@@ -7,6 +7,8 @@ CYAN='\033[0;36m'; WHITE='\033[1;37m'; DIM='\033[2m'; NC='\033[0m'
 
 REPO="https://github.com/Bogdan199719/mtproxy-panel.git"
 INSTALL_DIR="/opt/mtg-adminpanel"
+REPO_SLUG="${REPO#https://github.com/}"
+REPO_SLUG="${REPO_SLUG%.git}"
 
 p_ok()   { echo -e "${GREEN}✅ $1${NC}"; }
 p_err()  { echo -e "${RED}❌ $1${NC}"; exit 1; }
@@ -106,6 +108,7 @@ AGENT_TOKEN=$(openssl rand -hex 20)
 PORT=$PORT
 DATA_DIR=/data
 PANEL_URL=$PANEL_URL
+REPO_SLUG=$REPO_SLUG
 ENV
 p_ok "Конфигурация создана"
 
