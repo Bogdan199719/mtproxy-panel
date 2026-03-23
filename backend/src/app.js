@@ -25,6 +25,23 @@ function timingSafeEqualString(a, b) {
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
 
+function parseDbDate(value) {
+  if (!value) return null;
+  const normalized = String(value).replace(' ', 'T').replace(/(\.\d+)?Z?$/i, 'Z');
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isFutureDbDate(value) {
+  const date = parseDbDate(value);
+  return !!date && date.getTime() > Date.now();
+}
+
+function isExpiredDbDate(value) {
+  const date = parseDbDate(value);
+  return !!date && date.getTime() < Date.now();
+}
+
 // ── DB Migrations ─────────────────────────────────────────
 function runMigrations() {
   const migrations = [
@@ -283,7 +300,7 @@ app.get('/api/users', (req, res) => {
   res.json(rows.map(u => ({
     ...u,
     link: `tg://proxy?server=${u.node_host}&port=${u.port}&secret=${u.secret}`,
-    expired: u.expires_at ? new Date(u.expires_at) < new Date() : false,
+    expired: isExpiredDbDate(u.expires_at),
   })));
 });
 
@@ -298,7 +315,7 @@ app.get('/api/users/:name', (req, res) => {
   res.json({
     ...row,
     link: `tg://proxy?server=${row.node_host}&port=${row.port}&secret=${row.secret}`,
-    expired: row.expires_at ? new Date(row.expires_at) < new Date() : false,
+    expired: isExpiredDbDate(row.expires_at),
   });
 });
 
@@ -311,8 +328,9 @@ app.post('/api/nodes/:id/users/:name/renew', async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   // Считаем новую дату: от текущей даты истечения (если в будущем) или от сейчас
-  const base = user.expires_at && new Date(user.expires_at) > new Date()
-    ? new Date(user.expires_at)
+  const baseDate = parseDbDate(user.expires_at);
+  const base = baseDate && baseDate.getTime() > Date.now()
+    ? new Date(baseDate)
     : new Date();
   base.setDate(base.getDate() + parseInt(days));
   const newExpiry = base.toISOString().replace('T', ' ').slice(0, 19);
@@ -601,7 +619,7 @@ app.get('/api/nodes/:id/users', async (req, res) => {
     running: remote ? !remote.status.includes('stopped') : false,
     is_online: remote ? (remote.connections || 0) > 0 : false,
     link: `tg://proxy?server=${node.host}&port=${u.port}&secret=${u.secret}`,
-    expired: u.expires_at ? new Date(u.expires_at) < new Date() : false,
+    expired: isExpiredDbDate(u.expires_at),
   });
 
   try {
@@ -706,7 +724,7 @@ app.put('/api/nodes/:id/users/:name', async (req, res) => {
 
   const newExpiry = expires_at !== undefined ? normalizeDate(expires_at) : user.expires_at;
   const wasExpiredOrSuspended = user.billing_status === 'suspended';
-  const newExpiryIsValid = newExpiry && new Date(newExpiry) > new Date();
+  const newExpiryIsValid = isFutureDbDate(newExpiry);
 
   db.prepare(`UPDATE users SET
     note=?, expires_at=?, traffic_limit_gb=?,
