@@ -18,6 +18,13 @@ const crypto         = require('crypto');
 let pkgVersion = 'unknown';
 try { pkgVersion = require('../package.json').version; } catch (_) {}
 
+function timingSafeEqualString(a, b) {
+  const aBuf = Buffer.from(String(a || ''));
+  const bBuf = Buffer.from(String(b || ''));
+  if (aBuf.length !== bBuf.length) return false;
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
 // ── DB Migrations ─────────────────────────────────────────
 function runMigrations() {
   const migrations = [
@@ -165,10 +172,7 @@ app.post('/api/login', loginRateLimit, (req, res) => {
   if (!username || !password)
     return res.status(401).json({ error: 'Неверный логин или пароль' });
   const userMatch = username === ADMIN_USERNAME;
-  const passMatch = crypto.timingSafeEqual(
-    Buffer.from(password || ''),
-    Buffer.from(ADMIN_PASSWORD)
-  );
+  const passMatch = timingSafeEqualString(password, ADMIN_PASSWORD);
   if (userMatch && passMatch) {
     res.json({ token: AUTH_TOKEN });
   } else {
@@ -180,6 +184,14 @@ app.post('/api/login', loginRateLimit, (req, res) => {
 app.use('/api', (req, res, next) => {
   const token = req.headers['x-auth-token'];
   if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Unauthorized' });
+  const totpExempt = req.path === '/totp/status' || req.path === '/totp/verify';
+  if (!totpExempt && isTotpEnabled()) {
+    const code = String(req.headers['x-totp-code'] || '').trim();
+    const secret = getTotpSecret();
+    if (!code || !secret || !authenticator.verify(code, secret)) {
+      return res.status(403).json({ error: 'TOTP required', totp: true });
+    }
+  }
   next();
 });
 
@@ -360,8 +372,19 @@ app.delete('/api/nodes/:id', async (req, res) => {
   if (!node) return res.status(404).json({ error: 'Not found' });
   // Stop and remove all users on this node via SSH before deleting
   const users = db.prepare('SELECT name FROM users WHERE node_id = ?').all(req.params.id);
+  const failedUsers = [];
   for (const u of users) {
-    try { await ssh.removeRemoteUser(node, u.name); } catch (_) {}
+    try {
+      await ssh.removeRemoteUser(node, u.name);
+    } catch (e) {
+      failedUsers.push({ name: u.name, error: e.message });
+    }
+  }
+  if (failedUsers.length) {
+    return res.status(409).json({
+      error: 'Failed to remove all remote users; node was not deleted',
+      failed_users: failedUsers,
+    });
   }
   db.prepare('DELETE FROM users WHERE node_id = ?').run(req.params.id);
   db.prepare('DELETE FROM nodes WHERE id = ?').run(req.params.id);
@@ -611,6 +634,13 @@ app.post('/api/nodes/:id/sync', async (req, res) => {
   if (!node) return res.status(404).json({ error: 'Node not found' });
   try {
     const remoteUsers = await ssh.getRemoteUsers(node);
+    const incomplete = remoteUsers.filter(u => !u.port || !u.secret);
+    if (incomplete.length) {
+      return res.status(409).json({
+        error: 'Sync requires SSH metadata (port/secret); current node metrics are insufficient for safe import',
+        incomplete_users: incomplete.map(u => u.name),
+      });
+    }
     let imported = 0;
     for (const u of remoteUsers) {
       const exists = db.prepare('SELECT id FROM users WHERE node_id = ? AND name = ?').get(req.params.id, u.name);
@@ -642,9 +672,19 @@ app.post('/api/nodes/:id/users', async (req, res) => {
   }
   try {
     const { port, secret } = await ssh.createRemoteUser(node, name);
-    const result = db.prepare(
-      'INSERT INTO users (node_id, name, port, secret, note, expires_at, traffic_limit_gb) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(req.params.id, name, port, secret, note||'', normalizeDate(expires_at), traffic_limit_gb||null);
+    let result;
+    try {
+      result = db.prepare(
+        'INSERT INTO users (node_id, name, port, secret, note, expires_at, traffic_limit_gb) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(req.params.id, name, port, secret, note||'', normalizeDate(expires_at), traffic_limit_gb||null);
+    } catch (dbError) {
+      try {
+        await ssh.removeRemoteUser(node, name);
+      } catch (rollbackError) {
+        throw new Error(`DB insert failed after remote create; rollback failed: ${rollbackError.message}`);
+      }
+      throw dbError;
+    }
     res.json({ id: result.lastInsertRowid, name, port, secret, note: note||'',
       expires_at: expires_at||null, traffic_limit_gb: traffic_limit_gb||null,
       link: `tg://proxy?server=${node.host}&port=${port}&secret=${secret}` });
@@ -776,6 +816,12 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 // ── Helpers ───────────────────────────────────────────────
 function calcNextReset(interval) {
   if (!interval || interval === 'never') return null;
@@ -884,6 +930,47 @@ async function checkExpiredUsers() {
   }
 }
 
+function runStartupChecks() {
+  try {
+    const foreignKeys = db.pragma('foreign_keys', { simple: true });
+    if (foreignKeys !== 1) {
+      console.warn('⚠️ SQLite foreign_keys pragma is disabled; DB cascades are not enforced');
+    }
+  } catch (e) {
+    console.warn('⚠️ Failed to check SQLite foreign_keys pragma:', e.message);
+  }
+
+  try {
+    const dupNames = db.prepare(`
+      SELECT node_id, name, COUNT(*) AS cnt
+      FROM users
+      GROUP BY node_id, name
+      HAVING cnt > 1
+      LIMIT 5
+    `).all();
+    if (dupNames.length) {
+      console.warn('⚠️ Duplicate user names detected in DB:', dupNames);
+    }
+  } catch (e) {
+    console.warn('⚠️ Failed to check duplicate user names:', e.message);
+  }
+
+  try {
+    const dupPorts = db.prepare(`
+      SELECT node_id, port, COUNT(*) AS cnt
+      FROM users
+      GROUP BY node_id, port
+      HAVING cnt > 1
+      LIMIT 5
+    `).all();
+    if (dupPorts.length) {
+      console.warn('⚠️ Duplicate ports detected in DB:', dupPorts);
+    }
+  } catch (e) {
+    console.warn('⚠️ Failed to check duplicate ports:', e.message);
+  }
+}
+
 setInterval(recordHistory,       5  * 60 * 1000);
 setInterval(checkExpiredUsers,   5  * 60 * 1000);
 
@@ -891,6 +978,7 @@ app.listen(PORT, () => {
   console.log(`🔒 MTG Panel running on http://0.0.0.0:${PORT}`);
   console.log(`🔑 Auth token: ${AUTH_TOKEN.slice(0,8)}...`);
   console.log(`📦 Version: ${pkgVersion}`);
+  runStartupChecks();
   setTimeout(recordHistory,       10000);
   setTimeout(checkExpiredUsers,    5000);
 });

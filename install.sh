@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 set +H
 cd /tmp
 
@@ -86,9 +87,12 @@ fi
 # ── Клонирование ─────────────────────────────────────────────
 p_step "Загрузка MTG AdminPanel..."
 if [ -d "$INSTALL_DIR/.git" ]; then
-    cd "$INSTALL_DIR" && git pull -q
+    cd "$INSTALL_DIR"
+    BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+    git fetch origin "$BRANCH"
+    git merge --ff-only "origin/$BRANCH"
 elif [ -d "$INSTALL_DIR" ]; then
-    rm -rf "$INSTALL_DIR" && git clone -q "$REPO" "$INSTALL_DIR"
+    p_err "Директория $INSTALL_DIR уже существует и не является git-репозиторием. Проверь данные и удали её вручную перед установкой."
 else
     git clone -q "$REPO" "$INSTALL_DIR"
 fi

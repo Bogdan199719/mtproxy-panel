@@ -1219,6 +1219,10 @@ function NodeModal({ node, onClose, onSave }) {
   const [setupRunning, setSetupRunning] = useState(false);
   const set = (k,v) => setF(x=>({...x,[k]:v}));
 
+  const confirmSetup = () => confirm(
+    'Подготовка сервера изменит Docker, UFW, sysctl и системные лимиты на выбранной ноде. Используй только на выделенном сервере для MTG. Продолжить?'
+  );
+
   const doSetup = async (nodeId) => {
     setSetupRunning(true);
     setSetupLog('Подключение к серверу...\nУстанавливаю Docker, xxd, MTG Agent (~1-2 мин)...');
@@ -1258,13 +1262,18 @@ function NodeModal({ node, onClose, onSave }) {
       if(node) { await api('PUT',`/api/nodes/${node.id}`,payload); toast('Нода обновлена','success'); savedId = node.id; }
       else { const r = await api('POST','/api/nodes',payload); toast('Нода добавлена','success'); savedId = r.id; }
       setLoading(false);
-      if(withSetup && savedId) { const ok = await doSetup(savedId); if(ok) onSave(); }
+      if(withSetup && savedId) {
+        if (!confirmSetup()) { onSave(); return; }
+        const ok = await doSetup(savedId);
+        if(ok) onSave();
+      }
       else onSave();
     } catch(e){toast(e.message,'error'); setLoading(false);}
   };
 
   const setupNode = async () => {
     if(!node?.id) return;
+    if(!confirmSetup()) return;
     await doSetup(node.id);
   };
 
