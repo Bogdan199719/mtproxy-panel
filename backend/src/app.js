@@ -221,7 +221,7 @@ function getTotpSecret() {
 }
 function isTotpEnabled() {
   const row = db.prepare("SELECT value FROM settings WHERE key='totp_enabled'").get();
-  return row && row.value === '1';
+  return !!row && row.value === '1';
 }
 
 app.get('/api/totp/status', (req, res) => {

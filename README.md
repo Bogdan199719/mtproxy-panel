@@ -162,6 +162,8 @@ POST /api/login   { "username": "...", "password": "..." }
 
 Все остальные запросы: заголовок `x-auth-token: TOKEN`
 
+Если включена 2FA, все защищённые запросы также должны передавать заголовок `x-totp-code: 123456`.
+
 ### Ноды
 
 | Метод | URL | Описание |
@@ -215,6 +217,7 @@ bash update.sh
 - `POST /api/nodes/:id/users/:name/stop` — теперь асинхронный: отвечает сразу `{"ok":true,"status":"pending"}`, остановка идёт в фоне
 - Новые endpoints поиска: `GET /api/users` и `GET /api/users/:name`
 - Полная документация API в `GET /api/docs`
+- Исправлены проверки логина, реальное применение 2FA, безопасный sync/import через agent и конфликты портов новых proxy
 
 ### v2.1.0
 - Авто-оптимизация ноды при подготовке (BBR, UFW, ulimits, Docker log limits, CPU/RAM detection)
